@@ -14,9 +14,12 @@ class Params:
 @dataclass
 class Files:
     # File paths for the training process
-    train_data: str
-    val_data: str
-    test_data: str
+    bundles_dataset: str
+    bundles_product_match_train: str
+    bundles_product_match_test: str
+    product_dataset: str
+    bundles_images: str
+    products_images: str
 
 @dataclass
 class InditexConfig:
