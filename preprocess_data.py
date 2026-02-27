@@ -425,12 +425,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("data/preprocessed"),
+        default=Path("data/"),
         help="Output directory (default: data/preprocessed)",
     )
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--download_products", action="store_true")
+    parser.add_argument(
+        "--skip_download",
+        action="store_true",
+        help="Do not download images; use local files if present to compute image availability stats.",
+    )
     parser.add_argument("--max_workers", type=int, default=16)
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--retries", type=int, default=2)
@@ -525,15 +530,23 @@ def main() -> None:
         (r.bundle_asset_id, bundle_img_dir / f"{r.bundle_asset_id}.jpg", r.image_url)
         for r in records
     ]
-    LOGGER.info("Downloading bundle images (%d items)...", len(bundle_tasks))
-    bundle_image_status, bundle_forbidden_urls = download_many_images(
-        tasks=bundle_tasks,
-        max_workers=args.max_workers,
-        timeout=args.timeout,
-        retries=args.retries,
-    )
+    if args.skip_download:
+        LOGGER.info("Skipping bundle image downloads (--skip_download enabled).")
+        bundle_image_status = {
+            r.bundle_asset_id: (bundle_img_dir / f"{r.bundle_asset_id}.jpg").exists()
+            for r in records
+        }
+        bundle_forbidden_urls: List[str] = []
+    else:
+        LOGGER.info("Downloading bundle images (%d items)...", len(bundle_tasks))
+        bundle_image_status, bundle_forbidden_urls = download_many_images(
+            tasks=bundle_tasks,
+            max_workers=args.max_workers,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
 
-    if args.download_products:
+    if args.download_products and not args.skip_download:
         unique_products = products_df.drop_duplicates(subset=["product_asset_id"], keep="first")
         product_tasks: List[Tuple[str, Path, str]] = []
         for row in unique_products.itertuples(index=False):
