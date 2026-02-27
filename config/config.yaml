@@ -1,0 +1,13 @@
+#Base Settings
+defaults:
+  - _self_
+  - files: file.yaml
+
+params:
+  model: model/our_model.yaml
+  img_size: 640
+  epochs: 300
+  batch_size: 16
+  lr: 0.01
+  weight_decay: 0.0005
+  optimizer: AdamW
