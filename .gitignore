@@ -1,3 +1,5 @@
 data/preprocessed/*
+<<<<<<< Updated upstream
 data/bundle_images/*
 data/product_images/*
+.venv
