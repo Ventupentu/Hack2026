@@ -60,13 +60,6 @@ Use this dataset to deliver your final results.
 - A maximum of 15 products per bundle will be evaluated.
 - For each bundle, only the first 15 rows are considered during evaluation.
 
-## Recommended Modeling Approach
-1. Encode bundle images and product images into a shared embedding space.
-2. Optionally enrich product embeddings with `product_description`.
-3. Train with positive pairs from `bundles_product_match_train.csv` and sampled negatives.
-4. For each test bundle, rank product candidates by similarity.
-5. Output top-k products per bundle (`k <= 15`) in ranked order.
-
 ## Suggested Output Behavior
 - Keep rows grouped by `bundle_asset_id`.
 - Within each bundle, sort rows by model confidence (best prediction first).
