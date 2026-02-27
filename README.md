@@ -75,3 +75,41 @@ B_yyyyy,I_ccccc
 ```
 
 In this example, bundle `B_xxxxx` has two recognized products, so it appears in two rows.
+
+
+### Structure
+
+
+## Estructura del Proyecto
+
+
+The project's directory and code structure is organized as follows:
+
+```text
+Hack2026/
+|-- data/
+|   |-- raw/                  Original downloaded data (CSV files, product and bundle images).
+|   |-- processed/            Processed images ready for training (resized, crops).
+|   |-- embeddings/           Pre-calculated feature vectors to speed up inference.
+|-- notebooks/
+|   |-- 01_EDA.ipynb          Notebook for statistical exploration and visual data cleaning.
+|   |-- 02_Baseline.ipynb     Notebook for quick inference tests with base models (zero-shot).
+|-- src/                      Main source code and model logic.
+|   |-- config.py             Centralized file for hyperparameters, system paths, and general configurations.
+|   |-- data/                 Data management module.
+|   |   |-- dataset.py        Classes to structure the data (PyTorch Datasets for products and bundles).
+|   |   |-- transforms.py     Logic associated with augmentation and transformation of input images.
+|   |-- models/               Architectures and learning module.
+|   |   |-- feature_extractors.py Wrappers to load feature extractor models (e.g., ViT, ResNet, CLIP).
+|   |   |-- metric_learning.py    Implementation of loss functions and metric learning heads (Contrastive, etc.).
+|   |-- utils/                General project utilities module.
+|   |   |-- metrics.py        Functions for performance calculation based on required metrics (Recall@K, mAP).
+|   |   |-- retrieval.py      Logic for fast indexation and search of similarity vectors.
+|   |   |-- logger.py         Utilities for logging events and training metrics.
+|   |-- train.py              Main script coordinating the training or fine-tuning cycle.
+|   |-- infer.py              Inference script that evaluates the test set and generates the submission document.
+|-- tests/                    Unit tests module to verify specific elements like transformations.
+|-- submissions/              Destination folder to orderly save CSVs with generated predictions.
+|-- requirements.txt          List of dependencies and Python versions to ensure reproducibility.
+|-- README.md                 This central document.
+```
