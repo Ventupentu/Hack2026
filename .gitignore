@@ -5,3 +5,11 @@ data
 
 *.jpg
 *.png
+
+data/bundle_images/*
+data/product_images/*
+.venv
+__pycache__/
+/multirun
+/outputs
+
