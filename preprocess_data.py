@@ -232,7 +232,7 @@ def split_train_val(
     val_ratio: float,
     seed: int,
 ) -> Tuple[List[BundleRecord], List[BundleRecord]]:
-    """Approximate stratified split by number of labels per bundle."""
+    """Stratified split by number of labels per bundle."""
     if not 0 < val_ratio < 1:
         raise ValueError("--val_ratio must be between 0 and 1")
 
@@ -241,15 +241,52 @@ def split_train_val(
         grouped[len(record.labels)].append(record)
 
     rng = random.Random(seed)
+    total_records = len(records)
+    target_val_total = int(round(total_records * val_ratio))
+
+    # 1) Base allocation by floor of each stratum expected val count.
+    allocation: Dict[int, int] = {}
+    fractional_parts: List[Tuple[float, int]] = []
+    for label_count, group in grouped.items():
+        expected = len(group) * val_ratio
+        base = int(expected)
+        allocation[label_count] = min(base, len(group))
+        fractional_parts.append((expected - base, label_count))
+
+    # 2) Distribute remaining validation slots by largest fractional remainder.
+    remaining = max(target_val_total - sum(allocation.values()), 0)
+    fractional_parts.sort(key=lambda x: (-x[0], x[1]))
+    for _, label_count in fractional_parts:
+        if remaining <= 0:
+            break
+        capacity = len(grouped[label_count]) - allocation[label_count]
+        if capacity <= 0:
+            continue
+        add = min(capacity, remaining)
+        allocation[label_count] += add
+        remaining -= add
+
+    # 3) If we exceeded target due to flooring/constraints, remove from smallest remainder first.
+    overflow = max(sum(allocation.values()) - target_val_total, 0)
+    fractional_parts_asc = sorted(fractional_parts, key=lambda x: (x[0], x[1]))
+    for _, label_count in fractional_parts_asc:
+        if overflow <= 0:
+            break
+        removable = allocation[label_count]
+        if removable <= 0:
+            continue
+        remove = min(removable, overflow)
+        allocation[label_count] -= remove
+        overflow -= remove
+
     train_records: List[BundleRecord] = []
     val_records: List[BundleRecord] = []
 
-    for _, group in sorted(grouped.items(), key=lambda x: x[0]):
+    for label_count, group in sorted(grouped.items(), key=lambda x: x[0]):
         items = list(group)
         items.sort(key=lambda x: x.bundle_asset_id)
         rng.shuffle(items)
-        n_val = int(round(len(items) * val_ratio))
-        n_val = min(max(n_val, 0), len(items))
+        n_val = allocation[label_count]
         val_records.extend(items[:n_val])
         train_records.extend(items[n_val:])
 
