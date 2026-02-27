@@ -448,7 +448,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("data/preprocessed"),
+        default=Path("data/"),
         help="Output directory (default: data/preprocessed)",
     )
     parser.add_argument("--val_ratio", type=float, default=0.1)
@@ -568,6 +568,7 @@ def main() -> None:
             retries=args.retries,
         )
 
+    if args.download_products and not args.skip_download:
     if args.download_products and not args.skip_download:
         unique_products = products_df.drop_duplicates(subset=["product_asset_id"], keep="first")
         product_tasks: List[Tuple[str, Path, str]] = []
