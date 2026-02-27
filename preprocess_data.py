@@ -364,6 +364,29 @@ def write_manifest(
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def write_multilabel_csv(
+    path: Path,
+    records: Sequence[BundleRecord],
+    label2idx: Dict[str, int],
+    bundle_img_dir: Path,
+) -> None:
+    """Write aggregated CSV with one row per bundle and all labels in that image."""
+    ensure_dir(path.parent)
+    rows: List[Dict[str, str]] = []
+    for record in records:
+        rows.append(
+            {
+                "bundle_asset_id": record.bundle_asset_id,
+                "section_id": record.section_id,
+                "image_path": str((bundle_img_dir / f"{record.bundle_asset_id}.jpg").resolve()),
+                "labels": "|".join(record.labels),
+                "label_indices": "|".join(str(label2idx[label]) for label in record.labels),
+                "num_labels": str(len(record.labels)),
+            }
+        )
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
 def compute_stats(
     records: Sequence[BundleRecord],
     train_records: Sequence[BundleRecord],
@@ -431,6 +454,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--download_products", action="store_true")
+    parser.add_argument(
+        "--skip_download",
+        action="store_true",
+        help="Skip all downloads and only use local images if already present.",
+    )
     parser.add_argument("--max_workers", type=int, default=16)
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--retries", type=int, default=2)
@@ -525,15 +553,22 @@ def main() -> None:
         (r.bundle_asset_id, bundle_img_dir / f"{r.bundle_asset_id}.jpg", r.image_url)
         for r in records
     ]
-    LOGGER.info("Downloading bundle images (%d items)...", len(bundle_tasks))
-    bundle_image_status, bundle_forbidden_urls = download_many_images(
-        tasks=bundle_tasks,
-        max_workers=args.max_workers,
-        timeout=args.timeout,
-        retries=args.retries,
-    )
+    if args.skip_download:
+        LOGGER.info("Skipping bundle image downloads (--skip_download).")
+        bundle_image_status = {
+            r.bundle_asset_id: (bundle_img_dir / f"{r.bundle_asset_id}.jpg").exists() for r in records
+        }
+        bundle_forbidden_urls: List[str] = []
+    else:
+        LOGGER.info("Downloading bundle images (%d items)...", len(bundle_tasks))
+        bundle_image_status, bundle_forbidden_urls = download_many_images(
+            tasks=bundle_tasks,
+            max_workers=args.max_workers,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
 
-    if args.download_products:
+    if args.download_products and not args.skip_download:
         unique_products = products_df.drop_duplicates(subset=["product_asset_id"], keep="first")
         product_tasks: List[Tuple[str, Path, str]] = []
         for row in unique_products.itertuples(index=False):
@@ -571,6 +606,12 @@ def main() -> None:
         val_records,
         label2idx,
         bundle_image_status,
+        bundle_img_dir,
+    )
+    write_multilabel_csv(
+        manifests_dir / "bundles_multilabel.csv",
+        records,
+        label2idx,
         bundle_img_dir,
     )
 
