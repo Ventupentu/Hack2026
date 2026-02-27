@@ -65,6 +65,32 @@ Use this dataset to deliver your final results.
 - Within each bundle, sort rows by model confidence (best prediction first).
 - Cap predictions to at most 15 rows per bundle to match evaluation constraints.
 
+## Baseline: Pretrained Retrieval
+
+This repository now includes a simple baseline in `src/infer.py`:
+
+- Encoder: pretrained `torchvision` model (`resnet50` by default).
+- Method: extract normalized embeddings for all products, then retrieve top-K nearest products for each bundle.
+- Validation: computes `hit@K` and `recall@K` on a random validation split by `bundle_asset_id`.
+- Submission: writes one row per predicted product and caps at 15 products per bundle.
+
+### Run
+
+```bash
+python -m src.infer \
+  --model-name resnet50 \
+  --batch-size 64 \
+  --val-ratio 0.2 \
+  --top-n-submit 15 \
+  --submission-out outputs/test_submission.csv \
+  --metrics-out outputs/val_metrics.json
+```
+
+### Main outputs
+
+- `outputs/test_submission.csv`: file ready for upload (`bundle_asset_id,product_asset_id`).
+- `outputs/val_metrics.json`: local validation metrics and run summary.
+
 ## Example Output (Format Only)
 
 ```csv
@@ -154,4 +180,3 @@ python preprocess_data.py --skip_download --out_dir data/preprocessed --val_rati
 ### Inference & Output
 - Batched GPU inference for embeddings and detection
 - Deterministic post-processing to enforce top-15-per-bundle output constraint
-

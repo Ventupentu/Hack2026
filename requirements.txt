@@ -1,4 +1,8 @@
 pandas
-requests
+numpy
+pillow
 tqdm
+requests
 hydra-core
+torch
+torchvision

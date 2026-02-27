@@ -7,5 +7,5 @@ bundles_product_match_test: data/bundles_product_match_test.csv
 product_dataset: data/product_dataset.csv
 
 # Image directories
-bundles_images: data/bundles_images
-products_images: data/products_images
+bundles_images: data/bundle_images
+products_images: data/product_images
