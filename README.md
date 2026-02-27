@@ -76,40 +76,82 @@ B_yyyyy,I_ccccc
 
 In this example, bundle `B_xxxxx` has two recognized products, so it appears in two rows.
 
+## Recommended AI Pipeline
 
-### Structure
+This challenge is best solved as a **multi-object visual retrieval** problem, not as a closed-set classifier.
+Also, each `product_asset_id` has only one image, so the pipeline must be robust to single-view product representations.
 
+### 1) Data Preparation
+- Validate IDs and joins across all CSVs.
+- Build train/validation splits by `bundle_asset_id` (no leakage).
+- Generate product metadata tables (`product_asset_id`, image path, `product_description`).
 
-## Estructura del Proyecto
+### 2) Product Embedding Index (Offline)
+- Encode all product images into embeddings using strong vision backbones.
+- Use strong test-time augmentation (TTA) on product images (multi-crop/flip/color jitter) and average embeddings to create a more robust single product vector.
+- Store vectors and build an ANN index for fast nearest-neighbor search.
+- Keep index persistent for inference reuse.
 
-
-The project's directory and code structure is organized as follows:
-
-```text
-Hack2026/
-|-- data/
-|   |-- raw/                  Original downloaded data (CSV files, product and bundle images).
-|   |-- processed/            Processed images ready for training (resized, crops).
-|   |-- embeddings/           Pre-calculated feature vectors to speed up inference.
-|-- notebooks/
-|   |-- 01_EDA.ipynb          Notebook for statistical exploration and visual data cleaning.
-|   |-- 02_Baseline.ipynb     Notebook for quick inference tests with base models (zero-shot).
-|-- src/                      Main source code and model logic.
-|   |-- config.py             Centralized file for hyperparameters, system paths, and general configurations.
-|   |-- data/                 Data management module.
-|   |   |-- dataset.py        Classes to structure the data (PyTorch Datasets for products and bundles).
-|   |   |-- transforms.py     Logic associated with augmentation and transformation of input images.
-|   |-- models/               Architectures and learning module.
-|   |   |-- feature_extractors.py Wrappers to load feature extractor models (e.g., ViT, ResNet, CLIP).
-|   |   |-- metric_learning.py    Implementation of loss functions and metric learning heads (Contrastive, etc.).
-|   |-- utils/                General project utilities module.
-|   |   |-- metrics.py        Functions for performance calculation based on required metrics (Recall@K, mAP).
-|   |   |-- retrieval.py      Logic for fast indexation and search of similarity vectors.
-|   |   |-- logger.py         Utilities for logging events and training metrics.
-|   |-- train.py              Main script coordinating the training or fine-tuning cycle.
-|   |-- infer.py              Inference script that evaluates the test set and generates the submission document.
-|-- tests/                    Unit tests module to verify specific elements like transformations.
-|-- submissions/              Destination folder to orderly save CSVs with generated predictions.
-|-- requirements.txt          List of dependencies and Python versions to ensure reproducibility.
-|-- README.md                 This central document.
+```bash
+python preprocess_data.py --skip_download --out_dir data/preprocessed --val_ratio 0.1 --seed 42
 ```
+
+### 3) Bundle Item Detection
+- Detect item regions/crops from each bundle image.
+- Keep a fallback full-image crop for robustness when detection misses small items.
+
+### 4) Candidate Retrieval
+- For each bundle crop, retrieve top-K product candidates from the ANN index.
+- Use category priors from `product_description` and `bundle_id_section` to reduce false positives.
+- Apply query-time augmentation on bundle crops and fuse scores to compensate for viewpoint/background differences against single-view product images.
+
+### 5) Re-ranking
+- Re-rank retrieved candidates with a pairwise scorer using:
+- Visual similarity features.
+- Detector confidence.
+- Category/section compatibility.
+- Emphasize metric-learning losses with hard negatives to improve discrimination when only one reference image exists per product.
+
+### 6) Final Prediction & Submission
+- Merge candidates from all crops in a bundle.
+- Deduplicate `product_asset_id`.
+- Sort by confidence and keep up to the first 15 predictions per bundle.
+- Export submission CSV with one row per predicted product.
+
+### Single-Image Product Constraint (Important)
+- There is only one image per product ID, so do not rely on multi-view learning at product level.
+- Prefer embedding robustness strategies: TTA averaging, strong image normalization, and feature fusion from two complementary encoders.
+- Use retrieval + re-ranking instead of direct classification over all products, since class support is extremely sparse.
+
+## Recommended Technologies
+
+### Core Framework
+- `Python 3.11+`
+- `PyTorch`
+- `torchvision`
+- `pandas`, `numpy`
+
+### Feature Extraction / Encoders
+- `transformers` + `timm`
+- `SigLIP` (image-text aligned embeddings)
+- `DINOv2` (strong visual embeddings)
+
+### Detection & Localization
+- `GroundingDINO` (open-vocabulary detection), or `OWL-ViT` as alternative
+- Optional: `segment-anything` for tighter crops if needed
+
+### Retrieval
+- `FAISS` for ANN index and similarity search
+- Embedding-time and query-time TTA fusion to stabilize nearest-neighbor ranking under single-image-per-product conditions
+
+### Re-ranking
+- `LightGBM` ranker or a small `PyTorch` MLP scorer
+
+### Training / Experimentation
+- `Hydra` for configuration management
+- `Weights & Biases` or `MLflow` for experiment tracking
+
+### Inference & Output
+- Batched GPU inference for embeddings and detection
+- Deterministic post-processing to enforce top-15-per-bundle output constraint
+
