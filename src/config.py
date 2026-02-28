@@ -29,6 +29,8 @@ class Files:
     train_manifest: str = "data/bundles_product_match_train.csv"
     val_manifest: str = "data/bundles_product_match_train.csv"
     products_manifest: str = "data/product_dataset.csv"
+    bundles_images: str = "data/images/bundles"
+    products_images: str = "data/images/products"
     output_dir: str = "outputs/retrieval_openclip"
 
 

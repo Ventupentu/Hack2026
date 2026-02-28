@@ -114,15 +114,15 @@ def _first_existing_key(row: Dict[str, Any], keys: Sequence[str]) -> str:
     return ""
 
 
-def _default_bundle_path(bundle_id: str) -> Path:
-    return (Path("data") / "images" / "bundles" / f"{bundle_id}.jpg").resolve()
+def _default_bundle_path(bundle_id: str, bundles_images_dir: Path) -> Path:
+    return (bundles_images_dir / f"{bundle_id}.jpg").resolve()
 
 
-def _default_product_path(product_id: str) -> Path:
-    return (Path("data") / "images" / "products" / f"{product_id}.jpg").resolve()
+def _default_product_path(product_id: str, products_images_dir: Path) -> Path:
+    return (products_images_dir / f"{product_id}.jpg").resolve()
 
 
-def parse_products_manifest(path: Path) -> Dict[str, Path]:
+def parse_products_manifest(path: Path, products_images_dir: Path) -> Dict[str, Path]:
     """Return product_id -> image_path map."""
     rows = read_manifest_rows(path)
     product_to_image: Dict[str, Path] = {}
@@ -135,7 +135,7 @@ def parse_products_manifest(path: Path) -> Dict[str, Path]:
             ("image_path", "product_image_path", "path", "local_image_path"),
         )
         if not image_path:
-            image_path = str(_default_product_path(pid))
+            image_path = str(_default_product_path(pid, products_images_dir))
         product_to_image[pid] = Path(image_path).expanduser().resolve()
     if not product_to_image:
         raise RuntimeError("No product entries found in products_manifest.")
@@ -145,6 +145,7 @@ def parse_products_manifest(path: Path) -> Dict[str, Path]:
 def parse_bundle_manifest(
     path: Path,
     product_to_image: Dict[str, Path],
+    bundles_images_dir: Path,
 ) -> Tuple[Dict[str, Path], Dict[str, Set[str]]]:
     """Parse train/val manifest into bundle_image and positives mapping."""
     rows = read_manifest_rows(path)
@@ -161,7 +162,9 @@ def parse_bundle_manifest(
             ("bundle_image_path", "image_path", "query_image_path", "path"),
         )
         bundle_to_image[bundle_id] = (
-            Path(bundle_img).expanduser().resolve() if bundle_img else _default_bundle_path(bundle_id)
+            Path(bundle_img).expanduser().resolve()
+            if bundle_img
+            else _default_bundle_path(bundle_id, bundles_images_dir)
         )
 
         direct_pid = _first_existing_key(row, ("product_asset_id", "product_id", "candidate_id"))
@@ -420,6 +423,8 @@ def main(cfg: InditexConfig) -> None:
     train_manifest = Path(to_absolute_path(files.train_manifest))
     val_manifest = Path(to_absolute_path(files.val_manifest))
     products_manifest = Path(to_absolute_path(files.products_manifest))
+    bundles_images_dir = Path(to_absolute_path(files.bundles_images))
+    products_images_dir = Path(to_absolute_path(files.products_images))
     output_dir = Path(to_absolute_path(files.output_dir))
 
     if params.grad_accum <= 0:
@@ -446,9 +451,13 @@ def main(cfg: InditexConfig) -> None:
     model = model.to(device)
     model.train()
 
-    product_to_image = parse_products_manifest(products_manifest)
-    train_bundle_to_image, train_bundle_to_products = parse_bundle_manifest(train_manifest, product_to_image)
-    val_bundle_to_image, val_bundle_to_products = parse_bundle_manifest(val_manifest, product_to_image)
+    product_to_image = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
+    train_bundle_to_image, train_bundle_to_products = parse_bundle_manifest(
+        train_manifest, product_to_image, bundles_images_dir=bundles_images_dir
+    )
+    val_bundle_to_image, val_bundle_to_products = parse_bundle_manifest(
+        val_manifest, product_to_image, bundles_images_dir=bundles_images_dir
+    )
 
     train_dataset = BundlePositiveDataset(
         bundle_to_image=train_bundle_to_image,
