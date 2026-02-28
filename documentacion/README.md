@@ -1,4 +1,4 @@
-# Documentacion LaTeX del proyecto Hack2026
+# Documentacion LaTeX del Proyecto Hack2026
 
 Este directorio contiene un paper tecnico en LaTeX que documenta el proyecto completo (datos, metodologia, implementacion, entrenamiento, inferencia y reproducibilidad).
 
@@ -9,7 +9,7 @@ Este directorio contiene un paper tecnico en LaTeX que documenta el proyecto com
 - `references.bib`: bibliografia.
 - `Makefile`: comandos de compilacion.
 
-## Compilacion rapida
+## Compilacion Rapida
 
 ```bash
 cd documentacion

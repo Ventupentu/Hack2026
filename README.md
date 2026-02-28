@@ -1,80 +1,80 @@
 # Hack2026
 
-## Project Goal
-Build a model that predicts product matches for fashion bundles.
+## Objetivo del Proyecto
+Construir un modelo que prediga coincidencias de productos para bundles de moda.
 
-You must train using the provided training CSV files and generate the final output by completing `product_asset_id` values for test bundles.
+Debes entrenar usando los CSV de entrenamiento proporcionados y generar la salida final completando los valores `product_asset_id` para los bundles de test.
 
-## Dataset Overview
+## Resumen del Dataset
 
 ### 1) `data/bundles_dataset.csv`
-Bundle catalog (the query side).
+Catalogo de bundles (lado de consulta).
 
-Columns:
-- `bundle_asset_id`: Unique bundle image identifier.
-- `bundle_id_section`: Bundle section/category id.
-- `bundle_image_url`: URL of the bundle image.
+Columnas:
+- `bundle_asset_id`: Identificador unico de la imagen del bundle.
+- `bundle_id_section`: ID de seccion/categoria del bundle.
+- `bundle_image_url`: URL de la imagen del bundle.
 
 ### 2) `data/product_dataset.csv`
-Product catalog (the candidate side).
+Catalogo de productos (lado candidato).
 
-Columns:
-- `product_asset_id`: Unique product image identifier.
-- `product_image_url`: URL of the product image.
-- `product_description`: Product text description.
+Columnas:
+- `product_asset_id`: Identificador unico de la imagen del producto.
+- `product_image_url`: URL de la imagen del producto.
+- `product_description`: Descripcion textual del producto.
 
 ### 3) `data/bundles_product_match_train.csv`
-Supervised training pairs (ground truth matches).
+Pares supervisados de entrenamiento (coincidencias reales).
 
-Columns:
+Columnas:
 - `bundle_asset_id`
 - `product_asset_id`
 
-Each row is a valid bundle-product match used for training.
+Cada fila es una coincidencia valida bundle-producto usada para entrenamiento.
 
 ### 4) `data/bundles_product_match_test.csv`
-Test template for final prediction.
+Plantilla de test para la prediccion final.
 
-Columns:
-- `bundle_asset_id`: Bundle to evaluate.
-- `product_asset_id`: Empty field to be filled by your model predictions.
+Columnas:
+- `bundle_asset_id`: Bundle a evaluar.
+- `product_asset_id`: Campo vacio que debes completar con las predicciones del modelo.
 
-## How the Files Connect
-- Join train/test bundle ids with `bundles_dataset.csv` by `bundle_asset_id`.
-- Join predicted or train product ids with `product_dataset.csv` by `product_asset_id`.
-- Training signal comes from `bundles_product_match_train.csv`.
-- Final submission is based on `bundles_product_match_test.csv`.
+## Como se Conectan los Archivos
+- Une los IDs de bundle de train/test con `bundles_dataset.csv` usando `bundle_asset_id`.
+- Une los IDs de producto (predichos o de train) con `product_dataset.csv` usando `product_asset_id`.
+- La senal de entrenamiento viene de `bundles_product_match_train.csv`.
+- La entrega final se basa en `bundles_product_match_test.csv`.
 
-## Final Submission Rules (Important)
+## Reglas de Entrega Final (Importante)
 
-### Purpose
-Use this dataset to deliver your final results.
+### Proposito
+Usa este dataset para entregar tus resultados finales.
 
-### Required Columns
-- `bundle_asset_id`: Identifier of the bundle image (group of products).
-- `product_asset_id`: Identifier of the product image. You must complete this column.
+### Columnas Obligatorias
+- `bundle_asset_id`: Identificador de la imagen del bundle (grupo de productos).
+- `product_asset_id`: Identificador de la imagen del producto. Debes completar esta columna.
 
-### Format Rules
-- Even if an example shows one row per bundle, the final result must include one row per recognized product inside each bundle.
-- Multiple rows can share the same `bundle_asset_id` (one per predicted product).
-- A maximum of 15 products per bundle will be evaluated.
-- For each bundle, only the first 15 rows are considered during evaluation.
+### Reglas de Formato
+- Aunque un ejemplo muestre una fila por bundle, el resultado final debe incluir una fila por cada producto reconocido dentro de cada bundle.
+- Varias filas pueden compartir el mismo `bundle_asset_id` (una por producto predicho).
+- Se evaluara un maximo de 15 productos por bundle.
+- Para cada bundle, solo se consideran las primeras 15 filas durante la evaluacion.
 
-## Suggested Output Behavior
-- Keep rows grouped by `bundle_asset_id`.
-- Within each bundle, sort rows by model confidence (best prediction first).
-- Cap predictions to at most 15 rows per bundle to match evaluation constraints.
+## Comportamiento Sugerido de Salida
+- Mantener las filas agrupadas por `bundle_asset_id`.
+- Dentro de cada bundle, ordenar las filas por confianza del modelo (mejor prediccion primero).
+- Limitar las predicciones a un maximo de 15 filas por bundle para cumplir las restricciones de evaluacion.
 
-## Baseline: Pretrained Retrieval
+## Linea Base: Recuperacion Preentrenada
 
-This repository now includes a simple baseline in `src/infer.py`:
+Este repositorio incluye un baseline simple en `src/infer.py`:
 
-- Encoder: pretrained `torchvision` model (`resnet50` by default).
-- Method: extract normalized embeddings for all products, then retrieve top-K nearest products for each bundle.
-- Validation: computes `hit@K` and `recall@K` on a random validation split by `bundle_asset_id`.
-- Submission: writes one row per predicted product and caps at 15 products per bundle.
+- Encoder: modelo preentrenado de `torchvision` (`resnet50` por defecto).
+- Metodo: extrae embeddings normalizados para todos los productos y luego recupera los top-K productos mas cercanos para cada bundle.
+- Validacion: calcula `hit@K` y `recall@K` en una particion aleatoria de validacion por `bundle_asset_id`.
+- Entrega: escribe una fila por producto predicho y limita a 15 productos por bundle.
 
-### Run
+### Ejecucion
 
 ```bash
 python -m src.infer \
@@ -86,12 +86,12 @@ python -m src.infer \
   --metrics-out outputs/val_metrics.json
 ```
 
-### Main outputs
+### Salidas principales
 
-- `outputs/test_submission.csv`: file ready for upload (`bundle_asset_id,product_asset_id`).
-- `outputs/val_metrics.json`: local validation metrics and run summary.
+- `outputs/test_submission.csv`: archivo listo para subir (`bundle_asset_id,product_asset_id`).
+- `outputs/val_metrics.json`: metricas de validacion local y resumen de ejecucion.
 
-## Example Output (Format Only)
+## Ejemplo de Salida (Solo Formato)
 
 ```csv
 bundle_asset_id,product_asset_id
@@ -100,31 +100,31 @@ B_xxxxx,I_bbbbb
 B_yyyyy,I_ccccc
 ```
 
-In this example, bundle `B_xxxxx` has two recognized products, so it appears in two rows.
+En este ejemplo, el bundle `B_xxxxx` tiene dos productos reconocidos, por eso aparece en dos filas.
 
-## Recommended AI Pipeline
+## Pipeline de IA Recomendado
 
-This challenge is best solved as a **multi-object visual retrieval** problem, not as a closed-set classifier.
-Also, each `product_asset_id` has only one image, so the pipeline must be robust to single-view product representations.
+Este reto se resuelve mejor como un problema de **recuperacion visual multiobjeto**, no como un clasificador de conjunto cerrado.
+Ademas, cada `product_asset_id` tiene una sola imagen, por lo que el pipeline debe ser robusto a representaciones de producto de vista unica.
 
-### 1) Data Preparation
-- Validate IDs and joins across all CSVs.
-- Build train/validation splits by `bundle_asset_id` (no leakage).
-- Generate product metadata tables (`product_asset_id`, image path, `product_description`).
+### 1) Preparacion de Datos
+- Validar IDs y uniones entre todos los CSV.
+- Construir particiones train/validacion por `bundle_asset_id` (sin fuga de informacion).
+- Generar tablas de metadatos de producto (`product_asset_id`, ruta de imagen, `product_description`).
 
-### 2) Product Embedding Index (Offline)
-- Encode all product images into embeddings using strong vision backbones.
-- Use strong test-time augmentation (TTA) on product images (multi-crop/flip/color jitter) and average embeddings to create a more robust single product vector.
-- Store vectors and build an ANN index for fast nearest-neighbor search.
-- Keep index persistent for inference reuse.
+### 2) Indice de Embeddings de Producto (Offline)
+- Codificar todas las imagenes de productos en embeddings usando backbones visuales potentes.
+- Usar test-time augmentation (TTA) fuerte en imagenes de producto (multi-crop/flip/color jitter) y promediar embeddings para crear un vector unico mas robusto por producto.
+- Guardar vectores y construir un indice ANN para busqueda rapida de vecinos mas cercanos.
+- Mantener el indice persistente para reutilizarlo en inferencia.
 
 ```bash
 python preprocess_data.py --skip_download --out_dir data/preprocessed --val_ratio 0.1 --seed 42
 ```
 
-### Offline Data Augmentation (Saved to Disk)
+### Aumento de Datos Offline (Guardado en Disco)
 
-Use `offline_augment.py` to generate additional views while preserving IDs (`bundle_asset_id` / `product_asset_id`):
+Usa `offline_augment.py` para generar vistas adicionales manteniendo los IDs (`bundle_asset_id` / `product_asset_id`):
 
 ```bash
 python offline_augment.py \
@@ -139,67 +139,67 @@ python offline_augment.py \
   --workers 8
 ```
 
-Outputs:
+Salidas:
 - `data/offline_aug/bundles_aug/*.jpg`
 - `data/offline_aug/products_aug/*.jpg`
 - `data/offline_aug/bundles_aug_manifest.jsonl`
 - `data/offline_aug/products_aug_manifest.jsonl`
 
-### 3) Bundle Item Detection
-- Detect item regions/crops from each bundle image.
-- Keep a fallback full-image crop for robustness when detection misses small items.
+### 3) Deteccion de Items en Bundle
+- Detectar regiones/recortes de items en cada imagen de bundle.
+- Mantener un recorte de imagen completa como respaldo cuando la deteccion falle en items pequenos.
 
-### 4) Candidate Retrieval
-- For each bundle crop, retrieve top-K product candidates from the ANN index.
-- Use category priors from `product_description` and `bundle_id_section` to reduce false positives.
-- Apply query-time augmentation on bundle crops and fuse scores to compensate for viewpoint/background differences against single-view product images.
+### 4) Recuperacion de Candidatos
+- Para cada recorte de bundle, recuperar los top-K productos candidatos desde el indice ANN.
+- Usar priors de categoria de `product_description` y `bundle_id_section` para reducir falsos positivos.
+- Aplicar augmentacion en tiempo de consulta sobre recortes de bundle y fusionar puntajes para compensar diferencias de punto de vista/fondo frente a imagenes de producto de vista unica.
 
-### 5) Re-ranking
-- Re-rank retrieved candidates with a pairwise scorer using:
-- Visual similarity features.
-- Detector confidence.
-- Category/section compatibility.
-- Emphasize metric-learning losses with hard negatives to improve discrimination when only one reference image exists per product.
+### 5) Reordenamiento
+- Reordenar candidatos recuperados con un scorer por pares usando:
+- Caracteristicas de similitud visual.
+- Confianza del detector.
+- Compatibilidad categoria/seccion.
+- Priorizar perdidas de metric learning con negativos dificiles para mejorar la discriminacion cuando solo existe una imagen de referencia por producto.
 
-### 6) Final Prediction & Submission
-- Merge candidates from all crops in a bundle.
-- Deduplicate `product_asset_id`.
-- Sort by confidence and keep up to the first 15 predictions per bundle.
-- Export submission CSV with one row per predicted product.
+### 6) Prediccion Final y Entrega
+- Fusionar candidatos de todos los recortes de un bundle.
+- Eliminar duplicados de `product_asset_id`.
+- Ordenar por confianza y conservar hasta las primeras 15 predicciones por bundle.
+- Exportar un CSV de entrega con una fila por producto predicho.
 
-### Single-Image Product Constraint (Important)
-- There is only one image per product ID, so do not rely on multi-view learning at product level.
-- Prefer embedding robustness strategies: TTA averaging, strong image normalization, and feature fusion from two complementary encoders.
-- Use retrieval + re-ranking instead of direct classification over all products, since class support is extremely sparse.
+### Restriccion de Producto con Imagen Unica (Importante)
+- Solo hay una imagen por ID de producto, por lo que no debes depender de aprendizaje multivista a nivel de producto.
+- Prioriza estrategias de robustez de embeddings: promediado con TTA, normalizacion fuerte de imagen y fusion de caracteristicas de dos encoders complementarios.
+- Usa recuperacion + reordenamiento en lugar de clasificacion directa sobre todos los productos, ya que el soporte por clase es extremadamente escaso.
 
-## Recommended Technologies
+## Tecnologias Recomendadas
 
-### Core Framework
+### Framework Base
 - `Python 3.11+`
 - `PyTorch`
 - `torchvision`
 - `pandas`, `numpy`
 
-### Feature Extraction / Encoders
+### Extraccion de Caracteristicas / Encoders
 - `transformers` + `timm`
-- `SigLIP` (image-text aligned embeddings)
-- `DINOv2` (strong visual embeddings)
+- `SigLIP` (embeddings alineados imagen-texto)
+- `DINOv2` (embeddings visuales robustos)
 
-### Detection & Localization
-- `GroundingDINO` (open-vocabulary detection), or `OWL-ViT` as alternative
-- Optional: `segment-anything` for tighter crops if needed
+### Deteccion y Localizacion
+- `GroundingDINO` (deteccion de vocabulario abierto), o `OWL-ViT` como alternativa
+- Opcional: `segment-anything` para recortes mas ajustados si hace falta
 
-### Retrieval
-- `FAISS` for ANN index and similarity search
-- Embedding-time and query-time TTA fusion to stabilize nearest-neighbor ranking under single-image-per-product conditions
+### Recuperacion
+- `FAISS` para indice ANN y busqueda por similitud
+- Fusion TTA en tiempo de embedding y en tiempo de consulta para estabilizar el ranking de vecinos cercanos bajo condiciones de una sola imagen por producto
 
-### Re-ranking
-- `LightGBM` ranker or a small `PyTorch` MLP scorer
+### Reordenamiento
+- `LightGBM` como ranker o un scorer MLP pequeno en `PyTorch`
 
-### Training / Experimentation
-- `Hydra` for configuration management
-- `Weights & Biases` or `MLflow` for experiment tracking
+### Entrenamiento / Experimentacion
+- `Hydra` para gestion de configuracion
+- `Weights & Biases` o `MLflow` para seguimiento de experimentos
 
-### Inference & Output
-- Batched GPU inference for embeddings and detection
-- Deterministic post-processing to enforce top-15-per-bundle output constraint
+### Inferencia y Salida
+- Inferencia en GPU por lotes para embeddings y deteccion
+- Postprocesado determinista para forzar la restriccion de top-15 por bundle en la salida

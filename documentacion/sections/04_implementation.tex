@@ -1,50 +1,50 @@
-\section{Implementation Details}
+\section{Detalles de Implementacion}
 
-\subsection{Configuration and Entrypoints}
+\subsection{Configuracion y Puntos de Entrada}
 
-The project uses Hydra~\cite{yadan2019hydra} with typed dataclasses (\texttt{src/config.py}). Main entrypoints are:
+El proyecto usa Hydra~\cite{yadan2019hydra} con dataclasses tipadas (\texttt{src/config.py}). Los principales puntos de entrada son:
 \begin{itemize}
-  \item \texttt{python -m src.train}: OpenCLIP training.
-  \item \texttt{python -m src.infer}: pretrained baseline inference + local validation split.
-  \item \texttt{python -m src.infer\_openclip}: inference from trained OpenCLIP checkpoint.
+  \item \texttt{python -m src.train}: entrenamiento OpenCLIP.
+  \item \texttt{python -m src.infer}: inferencia baseline preentrenada + particion de validacion local.
+  \item \texttt{python -m src.infer\_openclip}: inferencia desde un checkpoint entrenado de OpenCLIP.
 \end{itemize}
 
-Core runtime parameters include batch size, epochs, learning rate, AMP, gradient accumulation, recall cutoffs, and optional detection settings (\texttt{bbox\_*}).
+Los parametros principales de ejecucion incluyen batch size, epocas, learning rate, AMP, acumulacion de gradiente, cortes de recall y ajustes opcionales de deteccion (\texttt{bbox\_*}).
 
-\subsection{Code Architecture}
+\subsection{Arquitectura de Codigo}
 
 \begin{table}[h]
   \centering
   \small
   \begin{tabular}{p{0.37\linewidth} p{0.55\linewidth}}
     \toprule
-    \textbf{Module} & \textbf{Responsibility} \\
+    \textbf{Modulo} & \textbf{Responsabilidad} \\
     \midrule
-    \texttt{src/train.py} & Hydra bootstrap and trainer dispatch. \\
-    \texttt{src/models/retrieval\_openclip.py} & Main OpenCLIP training/validation loop and checkpointing. \\
-    \texttt{src/infer.py} & Baseline embedding extraction, retrieval, and submission export. \\
-    \texttt{src/infer\_openclip.py} & OpenCLIP checkpoint inference for test bundles. \\
-    \texttt{src/detection.py} & YOLO detector wrapper and box extraction utilities. \\
-    \texttt{src/utils/retrieval.py} & Similarity and top-K retrieval helpers. \\
-    \texttt{src/utils/metrics.py} & Hit@K and Recall@K computation. \\
-    \texttt{preprocess\_data.py} & Dataset integrity checks, split, manifests, and stats. \\
-    \texttt{offline\_augment.py} & Offline augmentation and augmentation manifests. \\
+    \texttt{src/train.py} & Bootstrap de Hydra y despacho al trainer. \\
+    \texttt{src/models/retrieval\_openclip.py} & Bucle principal de entrenamiento/validacion OpenCLIP y checkpoints. \\
+    \texttt{src/infer.py} & Extraccion de embeddings baseline, retrieval y exportacion de entrega. \\
+    \texttt{src/infer\_openclip.py} & Inferencia OpenCLIP para bundles de test desde checkpoint. \\
+    \texttt{src/detection.py} & Wrapper del detector YOLO y utilidades de extraccion de cajas. \\
+    \texttt{src/utils/retrieval.py} & Helpers de similitud y retrieval Top-K. \\
+    \texttt{src/utils/metrics.py} & Calculo de Hit@K y Recall@K. \\
+    \texttt{preprocess\_data.py} & Validacion de integridad del dataset, split, manifiestos y estadisticas. \\
+    \texttt{offline\_augment.py} & Aumento offline y manifiestos de aumento. \\
     \bottomrule
   \end{tabular}
-  \caption{Primary modules and responsibilities.}
+  \caption{Modulos principales y responsabilidades.}
   \label{tab:code-map}
 \end{table}
 
-\subsection{Training Loop Highlights}
+\subsection{Aspectos Clave del Loop de Entrenamiento}
 
-The OpenCLIP training implementation includes:
+La implementacion de entrenamiento OpenCLIP incluye:
 \begin{enumerate}
-  \item Dynamic device resolution (CPU/CUDA) and optional multi-GPU DataParallel.
-  \item Cosine learning-rate scheduler with 10\% warmup.
-  \item Optional mixed precision via \texttt{torch.cuda.amp}.
-  \item Periodic logging, per-epoch validation, JSONL metric appends, and checkpointing (\texttt{epoch\_X.pt}, \texttt{best.pt}).
+  \item Resolucion dinamica de dispositivo (CPU/CUDA) y DataParallel multi-GPU opcional.
+  \item Scheduler de learning rate coseno con 10\% de warmup.
+  \item Precision mixta opcional via \texttt{torch.cuda.amp}.
+  \item Logging periodico, validacion por epoca, anexado de metricas en JSONL y checkpoints (\texttt{epoch\_X.pt}, \texttt{best.pt}).
 \end{enumerate}
 
-\subsection{Inference and Fallback Logic}
+\subsection{Logica de Inferencia y Fallback}
 
-Both inference scripts generate one row per predicted product and cap outputs to 15 per bundle. If bundle embeddings are unavailable (e.g., missing image), popular products from train links are used as fallback.
+Ambos scripts de inferencia generan una fila por producto predicho y limitan la salida a 15 por bundle. Si no hay embeddings de bundle disponibles (por ejemplo, imagen ausente), se usan como fallback productos populares obtenidos de enlaces de train.
