@@ -23,10 +23,12 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import pandas as pd
@@ -154,6 +156,104 @@ def build_image_map(image_dir: Path) -> Dict[str, Path]:
 
 def parse_ks(text: str) -> List[int]:
     return sorted({int(t.strip()) for t in text.split(",") if t.strip()})
+
+
+def extract_ts_from_url(url: object) -> Optional[int]:
+    """Extract URL query parameter ``ts`` as integer timestamp."""
+    if pd.isna(url):
+        return None
+    text = str(url).strip()
+    if not text:
+        return None
+    query = parse_qs(urlparse(text).query)
+    values = query.get("ts")
+    if not values:
+        return None
+    value = str(values[0]).strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _ts_to_seconds(ts_value: int) -> float:
+    """Convert ts to seconds (supports seconds or milliseconds)."""
+    return float(ts_value) / 1000.0 if ts_value >= 10**12 else float(ts_value)
+
+
+def _ts_period_keys(ts_value: int) -> Tuple[str, str]:
+    """Return (month_key, quarter_key) in UTC, e.g. ('2025-09', '2025-Q3')."""
+    if ts_value >= 10**12:
+        ts = pd.Timestamp(ts_value, unit="ms", tz="UTC")
+    else:
+        ts = pd.Timestamp(ts_value, unit="s", tz="UTC")
+    month_key = f"{ts.year:04d}-{ts.month:02d}"
+    quarter_key = f"{ts.year:04d}-Q{((ts.month - 1) // 3) + 1}"
+    return month_key, quarter_key
+
+
+def load_asset_timestamps(df: pd.DataFrame, id_col: str, url_col: str) -> Dict[str, int]:
+    """Build id -> ts map from a dataframe with URL column."""
+    out: Dict[str, int] = {}
+    for row in df.itertuples(index=False):
+        asset_id = str(getattr(row, id_col))
+        url = getattr(row, url_col, None)
+        ts_value = extract_ts_from_url(url)
+        if ts_value is not None:
+            out[asset_id] = ts_value
+    return out
+
+
+def compute_ts_adjustment(
+    bundle_ts: Optional[int],
+    product_ts: Optional[int],
+    *,
+    delta_weight: float,
+    decay_hours: float,
+    bonus_same_date: float,
+    bonus_same_month: float,
+    bonus_same_quarter: float,
+    penalty_diff_quarter: float,
+) -> float:
+    """Compute additive score adjustment based on timestamp proximity."""
+    if bundle_ts is None or product_ts is None:
+        return 0.0
+
+    b_sec = _ts_to_seconds(bundle_ts)
+    p_sec = _ts_to_seconds(product_ts)
+    delta_hours = abs(b_sec - p_sec) / 3600.0
+
+    # Continuous proximity term in [-delta_weight, +delta_weight].
+    safe_decay = max(decay_hours, 1e-6)
+    proximity = math.exp(-delta_hours / safe_decay)
+    adjustment = float(delta_weight) * ((2.0 * proximity) - 1.0)
+
+    # Discrete period prior.
+    b_ts_int = int(round(bundle_ts))
+    p_ts_int = int(round(product_ts))
+    if b_ts_int >= 10**12:
+        b_date = pd.Timestamp(b_ts_int, unit="ms", tz="UTC").date().isoformat()
+    else:
+        b_date = pd.Timestamp(b_ts_int, unit="s", tz="UTC").date().isoformat()
+    if p_ts_int >= 10**12:
+        p_date = pd.Timestamp(p_ts_int, unit="ms", tz="UTC").date().isoformat()
+    else:
+        p_date = pd.Timestamp(p_ts_int, unit="s", tz="UTC").date().isoformat()
+
+    if b_date == p_date:
+        adjustment += float(bonus_same_date)
+    else:
+        b_month, b_quarter = _ts_period_keys(b_ts_int)
+        p_month, p_quarter = _ts_period_keys(p_ts_int)
+        if b_month == p_month:
+            adjustment += float(bonus_same_month)
+        elif b_quarter == p_quarter:
+            adjustment += float(bonus_same_quarter)
+        else:
+            adjustment += float(penalty_diff_quarter)
+    return adjustment
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +759,15 @@ def retrieve_per_crop(
     gender_filter: bool = True,
     max_per_category: int = 2,
     score_threshold: float = 0.0,
+    bundle_to_ts: Optional[Dict[str, int]] = None,
+    product_to_ts: Optional[Dict[str, int]] = None,
+    ts_rerank_enabled: bool = False,
+    ts_delta_weight: float = 0.0,
+    ts_decay_hours: float = 720.0,
+    ts_bonus_same_date: float = 0.0,
+    ts_bonus_same_month: float = 0.0,
+    ts_bonus_same_quarter: float = 0.0,
+    ts_penalty_diff_quarter: float = 0.0,
 ) -> Dict[str, List[str]]:
     """Per-crop retrieval with score merging + hard post-processing pipeline.
 
@@ -666,7 +775,8 @@ def retrieve_per_crop(
       1. Score threshold  — drop low-confidence results
       2. Gender filter    — discard known cross-gender products
       3. Category dedup   — max N products per product_description
-      4. Top-K            — take final top_n_submit (may return fewer)
+      4. TS rerank        — additive bonus/penalty by timestamp delta
+      5. Top-K            — take final top_n_submit (may return fewer)
     """
     results: Dict[str, List[str]] = {}
 
@@ -699,6 +809,24 @@ def retrieve_per_crop(
         # 3) Category diversity: max N products per description category
         if max_per_category > 0 and product_categories:
             ranked = deduplicate_by_category(ranked, product_categories, max_per_category)
+
+        # 4) Timestamp rerank: score += f(Δts) + period prior bonuses/penalties.
+        if ts_rerank_enabled and bundle_to_ts and product_to_ts:
+            bundle_ts = bundle_to_ts.get(bundle_id)
+            reranked: List[Tuple[str, float]] = []
+            for pid, base_score in ranked:
+                adjustment = compute_ts_adjustment(
+                    bundle_ts=bundle_ts,
+                    product_ts=product_to_ts.get(pid),
+                    delta_weight=ts_delta_weight,
+                    decay_hours=ts_decay_hours,
+                    bonus_same_date=ts_bonus_same_date,
+                    bonus_same_month=ts_bonus_same_month,
+                    bonus_same_quarter=ts_bonus_same_quarter,
+                    penalty_diff_quarter=ts_penalty_diff_quarter,
+                )
+                reranked.append((pid, base_score + adjustment))
+            ranked = sorted(reranked, key=lambda x: x[1], reverse=True)
 
         # Take top final (may be < top_n_submit — that's OK)
         results[bundle_id] = [pid for pid, _ in ranked[:top_n_submit]]
@@ -760,6 +888,13 @@ def main(cfg: InditexConfig) -> None:
     gender_filter = bool(getattr(cfg.infer, "gender_filter", True))
     max_per_category = int(getattr(cfg.infer, "max_per_category", 2))
     score_threshold = float(getattr(cfg.infer, "score_threshold", 0.0))
+    ts_rerank_enabled = bool(getattr(cfg.infer, "ts_rerank_enabled", False))
+    ts_delta_weight = float(getattr(cfg.infer, "ts_delta_weight", 0.0))
+    ts_decay_hours = float(getattr(cfg.infer, "ts_decay_hours", 720.0))
+    ts_bonus_same_date = float(getattr(cfg.infer, "ts_bonus_same_date", 0.0))
+    ts_bonus_same_month = float(getattr(cfg.infer, "ts_bonus_same_month", 0.0))
+    ts_bonus_same_quarter = float(getattr(cfg.infer, "ts_bonus_same_quarter", 0.0))
+    ts_penalty_diff_quarter = float(getattr(cfg.infer, "ts_penalty_diff_quarter", 0.0))
 
     set_seed(seed)
 
@@ -785,6 +920,8 @@ def main(cfg: InditexConfig) -> None:
         products_df["product_asset_id"].astype(str),
         products_df["product_description"].fillna("").astype(str),
     ))
+    bundle_to_ts = load_asset_timestamps(bundles_df, "bundle_asset_id", "bundle_image_url")
+    product_to_ts = load_asset_timestamps(products_df, "product_asset_id", "product_image_url")
     # Build raw description category map for dedup (uppercase description)
     product_to_category = load_product_categories(products_csv)
     print(f"Products: {len(product_ids)} with images / {len(all_product_ids)} total")
@@ -799,6 +936,15 @@ def main(cfg: InditexConfig) -> None:
     else:
         print("Gender filter disabled.")
     print(f"Category dedup: max_per_category={max_per_category} | Score threshold: {score_threshold}")
+    if ts_rerank_enabled:
+        print(
+            "TS rerank enabled: "
+            f"delta_weight={ts_delta_weight}, decay_hours={ts_decay_hours}, "
+            f"bonus_day={ts_bonus_same_date}, bonus_month={ts_bonus_same_month}, "
+            f"bonus_quarter={ts_bonus_same_quarter}, penalty_out_quarter={ts_penalty_diff_quarter}"
+        )
+    else:
+        print("TS rerank disabled.")
 
     # ---- Encode products (with TTA) ----
     print(f"\n[1/4] Encoding products (TTA={n_tta})...")
@@ -842,6 +988,15 @@ def main(cfg: InditexConfig) -> None:
             gender_filter=gender_filter,
             max_per_category=max_per_category,
             score_threshold=score_threshold,
+            bundle_to_ts=bundle_to_ts,
+            product_to_ts=product_to_ts,
+            ts_rerank_enabled=ts_rerank_enabled,
+            ts_delta_weight=ts_delta_weight,
+            ts_decay_hours=ts_decay_hours,
+            ts_bonus_same_date=ts_bonus_same_date,
+            ts_bonus_same_month=ts_bonus_same_month,
+            ts_bonus_same_quarter=ts_bonus_same_quarter,
+            ts_penalty_diff_quarter=ts_penalty_diff_quarter,
         )
 
         val_metrics = validate(val_bundle_ids, val_predictions, gt_map, eval_ks)
@@ -879,6 +1034,15 @@ def main(cfg: InditexConfig) -> None:
         gender_filter=gender_filter,
         max_per_category=max_per_category,
         score_threshold=score_threshold,
+        bundle_to_ts=bundle_to_ts,
+        product_to_ts=product_to_ts,
+        ts_rerank_enabled=ts_rerank_enabled,
+        ts_delta_weight=ts_delta_weight,
+        ts_decay_hours=ts_decay_hours,
+        ts_bonus_same_date=ts_bonus_same_date,
+        ts_bonus_same_month=ts_bonus_same_month,
+        ts_bonus_same_quarter=ts_bonus_same_quarter,
+        ts_penalty_diff_quarter=ts_penalty_diff_quarter,
     )
 
     submission_rows: List[Dict[str, str]] = []

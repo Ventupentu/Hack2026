@@ -36,9 +36,11 @@ from src.new_infer import (
     ProductIndex,
     build_image_map,
     collate_skip_none,
+    compute_ts_adjustment,
     detect_bundles,
     encode_products,
     filter_cross_gender,
+    load_asset_timestamps,
     load_bundle_genders,
     load_openclip_model,
     load_product_categories,
@@ -257,6 +259,15 @@ def retrieve_phase1(
     bundle_to_gender: Optional[Dict[str, int]] = None,
     product_to_gender: Optional[Dict[str, int]] = None,
     gender_filter: bool = True,
+    bundle_to_ts: Optional[Dict[str, int]] = None,
+    product_to_ts: Optional[Dict[str, int]] = None,
+    ts_rerank_enabled: bool = False,
+    ts_delta_weight: float = 0.0,
+    ts_decay_hours: float = 720.0,
+    ts_bonus_same_date: float = 0.0,
+    ts_bonus_same_month: float = 0.0,
+    ts_bonus_same_quarter: float = 0.0,
+    ts_penalty_diff_quarter: float = 0.0,
 ) -> Dict[str, List[str]]:
     """Phase 1 retrieval pipeline:
 
@@ -309,6 +320,24 @@ def retrieve_phase1(
         if gender_filter and bundle_to_gender and product_to_gender:
             bundle_gender = bundle_to_gender.get(bundle_id, _GENDER_UNKNOWN)
             ranked = filter_cross_gender(ranked, bundle_gender, product_to_gender)
+
+        # Timestamp rerank: score += adjustment_from_delta_ts
+        if ts_rerank_enabled and bundle_to_ts and product_to_ts:
+            bundle_ts = bundle_to_ts.get(bundle_id)
+            reranked: List[Tuple[str, float]] = []
+            for pid, base_score in ranked:
+                adjustment = compute_ts_adjustment(
+                    bundle_ts=bundle_ts,
+                    product_ts=product_to_ts.get(pid),
+                    delta_weight=ts_delta_weight,
+                    decay_hours=ts_decay_hours,
+                    bonus_same_date=ts_bonus_same_date,
+                    bonus_same_month=ts_bonus_same_month,
+                    bonus_same_quarter=ts_bonus_same_quarter,
+                    penalty_diff_quarter=ts_penalty_diff_quarter,
+                )
+                reranked.append((pid, base_score + adjustment))
+            ranked = sorted(reranked, key=lambda x: x[1], reverse=True)
 
         # Category Deduplication
         final_pids = []
@@ -389,6 +418,13 @@ def main(cfg: InditexConfig) -> None:
     checkpoint_path = cfg.infer.checkpoint_path
     n_tta = cfg.infer.tta_num_augs
     gender_filter = bool(getattr(cfg.infer, "gender_filter", True))
+    ts_rerank_enabled = bool(getattr(cfg.infer, "ts_rerank_enabled", False))
+    ts_delta_weight = float(getattr(cfg.infer, "ts_delta_weight", 0.0))
+    ts_decay_hours = float(getattr(cfg.infer, "ts_decay_hours", 720.0))
+    ts_bonus_same_date = float(getattr(cfg.infer, "ts_bonus_same_date", 0.0))
+    ts_bonus_same_month = float(getattr(cfg.infer, "ts_bonus_same_month", 0.0))
+    ts_bonus_same_quarter = float(getattr(cfg.infer, "ts_bonus_same_quarter", 0.0))
+    ts_penalty_diff_quarter = float(getattr(cfg.infer, "ts_penalty_diff_quarter", 0.0))
 
     # Phase 1 specific params
     TOP_K_PER_CROP = 10      # top-K candidates per crop
@@ -405,6 +441,15 @@ def main(cfg: InditexConfig) -> None:
     model, preprocess, tokenizer = load_openclip_model(checkpoint_path, device)
     print(f"Device: {device} | AMP: {amp} | TTA: {n_tta}")
     print(f"Top-K/crop: {TOP_K_PER_CROP} | Category boost: {CATEGORY_BOOST} | Max products: {MAX_PRODUCTS}")
+    if ts_rerank_enabled:
+        print(
+            "TS rerank enabled: "
+            f"delta_weight={ts_delta_weight}, decay_hours={ts_decay_hours}, "
+            f"bonus_day={ts_bonus_same_date}, bonus_month={ts_bonus_same_month}, "
+            f"bonus_quarter={ts_bonus_same_quarter}, penalty_out_quarter={ts_penalty_diff_quarter}"
+        )
+    else:
+        print("TS rerank disabled.")
 
     # ---- Load data ----
     bundles_df = pd.read_csv(bundles_csv)
@@ -421,6 +466,8 @@ def main(cfg: InditexConfig) -> None:
         products_df["product_asset_id"].astype(str),
         products_df["product_description"].fillna("").astype(str),
     ))
+    bundle_to_ts = load_asset_timestamps(bundles_df, "bundle_asset_id", "bundle_image_url")
+    product_to_ts = load_asset_timestamps(products_df, "product_asset_id", "product_image_url")
     # Uppercase description map for category matching
     product_to_desc_upper: Dict[str, str] = {
         pid: desc.strip().upper() for pid, desc in product_to_text.items()
@@ -509,6 +556,15 @@ def main(cfg: InditexConfig) -> None:
             bundle_to_gender=bundle_to_gender,
             product_to_gender=product_to_gender,
             gender_filter=gender_filter,
+            bundle_to_ts=bundle_to_ts,
+            product_to_ts=product_to_ts,
+            ts_rerank_enabled=ts_rerank_enabled,
+            ts_delta_weight=ts_delta_weight,
+            ts_decay_hours=ts_decay_hours,
+            ts_bonus_same_date=ts_bonus_same_date,
+            ts_bonus_same_month=ts_bonus_same_month,
+            ts_bonus_same_quarter=ts_bonus_same_quarter,
+            ts_penalty_diff_quarter=ts_penalty_diff_quarter,
         )
 
         num_preds = [len(v) for v in val_predictions.values()]
@@ -556,6 +612,15 @@ def main(cfg: InditexConfig) -> None:
         bundle_to_gender=bundle_to_gender,
         product_to_gender=product_to_gender,
         gender_filter=gender_filter,
+        bundle_to_ts=bundle_to_ts,
+        product_to_ts=product_to_ts,
+        ts_rerank_enabled=ts_rerank_enabled,
+        ts_delta_weight=ts_delta_weight,
+        ts_decay_hours=ts_decay_hours,
+        ts_bonus_same_date=ts_bonus_same_date,
+        ts_bonus_same_month=ts_bonus_same_month,
+        ts_bonus_same_quarter=ts_bonus_same_quarter,
+        ts_penalty_diff_quarter=ts_penalty_diff_quarter,
     )
 
     submission_rows: List[Dict[str, str]] = []
