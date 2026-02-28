@@ -67,10 +67,11 @@ Use this dataset to deliver your final results.
 
 ## Baseline: Pretrained Retrieval
 
-This repository now includes a simple baseline in `src/infer.py`:
+This repository now includes an improved baseline in `src/infer.py`:
 
-- Encoder: pretrained `torchvision` model (`resnet50` by default).
-- Method: extract normalized embeddings for all products, then retrieve top-K nearest products for each bundle.
+- Encoder: pretrained vision model (`fashionclip` by default, with fallback options `resnet50`, `clip`, etc.).
+- Method: extract normalized product embeddings (with optional flip TTA) and retrieve with multi-view bundle crops.
+- Re-ranking signal: optional section-aware candidate filtering from train (`bundle_id_section` + `product_description`).
 - Validation: computes `hit@K` and `recall@K` on a random validation split by `bundle_asset_id`.
 - Submission: writes one row per predicted product and caps at 15 products per bundle.
 
@@ -78,12 +79,28 @@ This repository now includes a simple baseline in `src/infer.py`:
 
 ```bash
 python -m src.infer \
-  --model-name resnet50 \
+  --model-name fashionclip \
+  --device cuda \
+  --gpu-ids 0,1 \
   --batch-size 64 \
+  --bundle-view-mode full+5crop \
+  --score-agg max \
+  --product-tta-flip \
+  --use-section-prior \
   --val-ratio 0.2 \
   --top-n-submit 15 \
   --submission-out outputs/test_submission.csv \
   --metrics-out outputs/val_metrics.json
+```
+
+If you want a different CLIP checkpoint:
+
+```bash
+python -m src.infer \
+  --model-name clip \
+  --hf-model-id openai/clip-vit-large-patch14 \
+  --device cuda \
+  --gpu-ids 0,1
 ```
 
 ### Main outputs
