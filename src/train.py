@@ -33,6 +33,17 @@ cs = ConfigStore.instance()
 cs.store(name="inditex_config", node=InditexConfig)
 
 
+class OpenCLIPImageEncoder(nn.Module):
+    """Wrapper exposing image-only forward for DataParallel."""
+
+    def __init__(self, clip_model: nn.Module) -> None:
+        super().__init__()
+        self.clip_model = clip_model
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.clip_model.encode_image(images)
+
+
 def set_seed(seed: int) -> None:
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -307,7 +318,7 @@ def encode_images(
                 continue
             imgs = batch["img"].to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
-                feats = model.encode_image(imgs)
+                feats = model(imgs)
             feats = F.normalize(feats.float(), p=2, dim=1)
             all_ids.extend(batch["id"])
             all_embs.append(feats)
@@ -414,6 +425,17 @@ def append_metrics(path: Path, row: Dict[str, Any]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def parse_gpu_ids(text: str) -> List[int]:
+    """Parse comma-separated GPU ids."""
+    ids: List[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        ids.append(int(token))
+    return ids
+
+
 @hydra.main(version_base=None, config_path="../config", config_name="config")
 def main(cfg: InditexConfig) -> None:
     """Entrypoint."""
@@ -443,13 +465,28 @@ def main(cfg: InditexConfig) -> None:
     metrics_path = output_dir / "metrics.jsonl"
 
     # Required model load exactly as requested.
-    model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
+    clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
         "hf-hub:Marqo/marqo-fashionSigLIP"
     )
     tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
     _ = tokenizer
-    model = model.to(device)
-    model.train()
+    clip_model = clip_model.to(device)
+    image_model: nn.Module = OpenCLIPImageEncoder(clip_model).to(device)
+
+    used_gpu_ids: List[int] = []
+    if device.type == "cuda" and params.multi_gpu and torch.cuda.device_count() > 1:
+        candidate_ids = parse_gpu_ids(params.gpu_ids)
+        max_idx = torch.cuda.device_count() - 1
+        used_gpu_ids = [gid for gid in candidate_ids if 0 <= gid <= max_idx]
+        if len(used_gpu_ids) >= 2:
+            image_model = nn.DataParallel(image_model, device_ids=used_gpu_ids)
+            print(f"Using DataParallel on GPUs: {used_gpu_ids}")
+        else:
+            print(
+                "Warning: multi_gpu enabled but fewer than 2 valid gpu_ids found. "
+                f"Available=0..{max_idx}, requested={candidate_ids}. Using single GPU."
+            )
+    image_model.train()
 
     product_to_image = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
     train_bundle_to_image, train_bundle_to_products = parse_bundle_manifest(
@@ -475,7 +512,7 @@ def main(cfg: InditexConfig) -> None:
         drop_last=False,
     )
 
-    optimizer = AdamW(model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
+    optimizer = AdamW(clip_model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
     updates_per_epoch = max(1, math.ceil(len(train_loader) / params.grad_accum))
     scheduler = build_scheduler(optimizer, total_steps=params.epochs * updates_per_epoch)
     scaler: Optional[torch.cuda.amp.GradScaler] = (
@@ -487,11 +524,11 @@ def main(cfg: InditexConfig) -> None:
     global_step = 0
 
     print(f"Train bundles: {len(train_dataset)} | Products indexed: {len(product_to_image)}")
-    print(f"Device: {device} | AMP: {bool(scaler is not None)}")
+    print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2}")
 
     for epoch in range(1, params.epochs + 1):
         epoch_start = time.time()
-        model.train()
+        image_model.train()
         running_loss = 0.0
         count_steps = 0
         optimizer.zero_grad(set_to_none=True)
@@ -506,8 +543,8 @@ def main(cfg: InditexConfig) -> None:
                 continue
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
-                bundle_emb = F.normalize(model.encode_image(bundle_imgs).float(), p=2, dim=1)
-                product_emb = F.normalize(model.encode_image(product_imgs).float(), p=2, dim=1)
+                bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
+                product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
                 logits = (bundle_emb @ product_emb.T) / temperature
                 targets = torch.arange(logits.shape[0], device=device)
                 loss_b2p = F.cross_entropy(logits, targets)
@@ -545,7 +582,7 @@ def main(cfg: InditexConfig) -> None:
 
         train_loss = running_loss / max(1, count_steps)
         recall_val, pos_dist = validate_retrieval(
-            model=model,
+            model=image_model,
             preprocess_val=preprocess_val,
             device=device,
             amp=params.amp,
@@ -575,7 +612,7 @@ def main(cfg: InditexConfig) -> None:
         if epoch % params.save_every == 0:
             save_checkpoint(
                 path=output_dir / f"epoch_{epoch}.pt",
-                model=model,
+                model=clip_model,
                 optimizer=optimizer,
                 scaler=scaler,
                 epoch=epoch,
@@ -587,7 +624,7 @@ def main(cfg: InditexConfig) -> None:
             best_recall = recall_val
             save_checkpoint(
                 path=output_dir / "best.pt",
-                model=model,
+                model=clip_model,
                 optimizer=optimizer,
                 scaler=scaler,
                 epoch=epoch,

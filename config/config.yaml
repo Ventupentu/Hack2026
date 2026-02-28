@@ -11,6 +11,8 @@ params:
   seed: 42
   num_workers: 4
   device: cuda
+  multi_gpu: true
+  gpu_ids: "0,1"
   amp: true
   grad_accum: 1
   log_every: 50
