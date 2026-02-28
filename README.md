@@ -203,3 +203,55 @@ Outputs:
 ### Inference & Output
 - Batched GPU inference for embeddings and detection
 - Deterministic post-processing to enforce top-15-per-bundle output constraint
+
+## GR-Lite Backend (Inference)
+
+`src/infer.py` now supports switching encoder backend through Hydra config.
+
+Run inference with GR-Lite:
+
+```bash
+python -m src.infer \
+  infer.encoder_backend=gr-lite \
+  infer.grlite_model_name=srpone/gr-lite \
+  infer.grlite_feature_dim=256 \
+  params.multi_gpu=true \
+  params.gpu_ids=0,1 \
+  infer.checkpoint_path=outputs/.../retrieval_gr_lite/best.pt
+```
+
+Notes:
+- `infer.grlite_model_name` can be a Hugging Face repo id or a local folder path.
+- `infer.grlite_feature_dim` must match the model output dimension used by `.search()`.
+- `infer.checkpoint_path` is optional. If provided with `gr-lite`, it loads fine-tuned `.pt` weights.
+
+## GR-Lite Fine-Tuning (Training)
+
+You can fine-tune GR-Lite for a few epochs with the same training entrypoint:
+
+```bash
+python -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.epochs=3 \
+  params.batch_size=32 \
+  params.lr=1e-5 \
+  params.multi_gpu=true \
+  params.gpu_ids=0,1 \
+  params.grlite_temperature=0.07
+```
+
+Resume from a previous `.pt` checkpoint:
+
+```bash
+python -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.grlite_resume_checkpoint=outputs/.../retrieval_gr_lite/last.pt \
+  params.epochs=8
+```
+
+Useful knobs:
+- `params.grlite_input_size` (default `518`)
+- `params.grlite_feature_dim` (default `256`)
+- `params.grlite_val_ratio` (used when train/val manifest are the same file)

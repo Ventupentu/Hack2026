@@ -6,3 +6,5 @@ requests
 hydra-core
 torch
 torchvision
+open-clip-torch
+transformers

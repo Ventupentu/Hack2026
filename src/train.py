@@ -29,7 +29,12 @@ def main(cfg: InditexConfig) -> None:
     bundles_images_dir = Path(to_absolute_path(files.bundles_images))
     products_images_dir = Path(to_absolute_path(files.products_images))
     yolo_detections_dir = Path(to_absolute_path(files.yolo_detections_dir))
-    output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
+    model_name = str(getattr(cfg.params, "model_name", "openclip_marqo_siglip")).strip()
+    if model_name == "openclip_marqo_siglip":
+        output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
+    else:
+        model_slug = model_name.replace("-", "_")
+        output_dir = Path(HydraConfig.get().runtime.output_dir) / f"retrieval_{model_slug}"
 
     train_retrieval_model(
         cfg=cfg,

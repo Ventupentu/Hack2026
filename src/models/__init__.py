@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.config import InditexConfig
+from src.models.retrieval_grlite import train_grlite_retrieval
 from src.models.retrieval_openclip import train_openclip_retrieval
 
 
@@ -33,7 +34,20 @@ def train_retrieval_model(
         )
         return
 
+    if model_name in {"gr-lite", "gr_lite", "grlite"}:
+        train_grlite_retrieval(
+            cfg=cfg,
+            train_manifest=train_manifest,
+            val_manifest=val_manifest,
+            products_manifest=products_manifest,
+            bundles_images_dir=bundles_images_dir,
+            products_images_dir=products_images_dir,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+        )
+        return
+
     raise ValueError(
         f"Unsupported params.model_name='{model_name}'. "
-        "Available: openclip_marqo_siglip"
+        "Available: openclip_marqo_siglip, gr-lite"
     )

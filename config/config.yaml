@@ -12,6 +12,12 @@ params:
   num_workers: 4
   device: cuda
   model_name: openclip_marqo_siglip
+  grlite_model_name: "srpone/gr-lite"
+  grlite_input_size: 518
+  grlite_feature_dim: 256
+  grlite_temperature: 0.07
+  grlite_val_ratio: 0.1
+  grlite_resume_checkpoint: ""
   multi_gpu: false
   gpu_ids: "0"
   amp: true
@@ -34,7 +40,15 @@ params:
   max_positives: 4
 
 infer:
+  # Encoder backend for inference: openclip | gr-lite
+  encoder_backend: openclip
   checkpoint_path: ""
+  # Hugging Face repo or local path for GR-Lite
+  grlite_model_name: "srpone/gr-lite"
+  # Input resize used by GR-Lite tensor pipeline
+  grlite_input_size: 518
+  # Output embedding dimension used by GR-Lite .search()
+  grlite_feature_dim: 256
   tta_num_augs: 1
   per_crop_topk: 150
   top_n_submit: 15

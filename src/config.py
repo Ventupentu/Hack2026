@@ -17,6 +17,12 @@ class Params:
     num_workers: int = 4
     device: str = "cuda"
     model_name: str = "openclip_marqo_siglip"
+    grlite_model_name: str = "srpone/gr-lite"
+    grlite_input_size: int = 518
+    grlite_feature_dim: int = 256
+    grlite_temperature: float = 0.07
+    grlite_val_ratio: float = 0.1
+    grlite_resume_checkpoint: str = ""
     multi_gpu: bool = False
     gpu_ids: str = "0,1"
     amp: bool = True
@@ -54,7 +60,11 @@ class Files:
 class Infer:
     """Inference parameters."""
 
+    encoder_backend: str = "openclip"
     checkpoint_path: str = ""
+    grlite_model_name: str = "srpone/gr-lite"
+    grlite_input_size: int = 518
+    grlite_feature_dim: int = 256
     tta_num_augs: int = 1
     per_crop_topk: int = 50
     top_n_submit: int = 15

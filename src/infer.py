@@ -11,7 +11,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import hydra
 import numpy as np
-import open_clip
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -20,17 +19,26 @@ from hydra.core.hydra_config import HydraConfig
 from hydra.utils import to_absolute_path
 from PIL import Image, UnidentifiedImageError
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from tqdm import tqdm
 
 from src.config import InditexConfig
 from src.detection import ClothingYOLODetector
 from src.utils.metrics import evaluate_bundle_retrieval
 
+try:
+    import open_clip
+except ModuleNotFoundError:
+    open_clip = None
+
 cs = ConfigStore.instance()
 cs.store(name="inditex_config", node=InditexConfig)
 
 BoxXYXY = Tuple[int, int, int, int]
 ScoredBox = Tuple[int, int, int, int, float]
+
+OPENCLIP_BACKENDS = {"openclip", "openclip_marqo_siglip", "marqo_siglip"}
+GRLITE_BACKENDS = {"gr-lite", "gr_lite", "grlite"}
 
 
 class ProductDataset(Dataset):
@@ -59,6 +67,7 @@ class ProductDataset(Dataset):
         return {
             "id": product_id,
             "img": self.transform(img),
+            "pil": img,
             "text": self.text_map.get(product_id, ""),
         }
 
@@ -72,6 +81,7 @@ def collate_skip_none(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dic
     return {
         "id": [item["id"] for item in batch],
         "img": torch.stack([item["img"] for item in batch], dim=0),
+        "pil": [item["pil"] for item in batch],
         "text": [item["text"] for item in batch],
     }
 
@@ -97,6 +107,17 @@ def build_image_map(image_dir: Path) -> Dict[str, Path]:
         if path.is_file():
             image_map[path.stem] = path
     return image_map
+
+
+def parse_gpu_ids(text: str) -> List[int]:
+    """Parse comma-separated GPU ids."""
+    ids: List[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        ids.append(int(token))
+    return ids
 
 
 def set_seed(seed: int) -> None:
@@ -334,9 +355,225 @@ def strip_module_prefix(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.
     return {key.replace("module.", "", 1): value for key, value in state_dict.items()}
 
 
+def resolve_encoder_backend(params: Any, infer_cfg: Any) -> str:
+    """Resolve encoder backend from config aliases."""
+    raw_backend = str(
+        getattr(infer_cfg, "encoder_backend", getattr(params, "model_name", "openclip"))
+    ).strip().lower()
+    if raw_backend in OPENCLIP_BACKENDS:
+        return "openclip"
+    if raw_backend in GRLITE_BACKENDS:
+        return "gr-lite"
+    raise ValueError(
+        f"Unsupported infer.encoder_backend='{raw_backend}'. "
+        "Available: openclip, gr-lite"
+    )
+
+
+def _extract_features_from_outputs(outputs: Any) -> torch.Tensor:
+    """Convert different model output shapes to [B, D] feature tensor."""
+    if isinstance(outputs, torch.Tensor):
+        features = outputs
+    elif hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+        features = outputs.pooler_output
+    elif hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+        features = outputs.last_hidden_state[:, 0]
+    elif isinstance(outputs, dict):
+        if "pooler_output" in outputs and outputs["pooler_output"] is not None:
+            features = outputs["pooler_output"]
+        elif "last_hidden_state" in outputs and outputs["last_hidden_state"] is not None:
+            features = outputs["last_hidden_state"][:, 0]
+        else:
+            raise RuntimeError("Model output dict does not contain usable features.")
+    else:
+        raise RuntimeError(f"Unsupported output type for feature extraction: {type(outputs)}")
+
+    if not isinstance(features, torch.Tensor):
+        features = torch.as_tensor(features)
+    if features.ndim == 1:
+        features = features.unsqueeze(0)
+    if features.ndim == 3:
+        features = features[:, 0]
+    if features.ndim != 2:
+        raise RuntimeError(f"Expected 2D features [B, D], got shape {tuple(features.shape)}")
+    return features
+
+
+class GRLiteTensorEncoder(torch.nn.Module):
+    """Tensor-only GR-Lite wrapper suitable for DataParallel."""
+
+    def __init__(self, base_model: torch.nn.Module) -> None:
+        super().__init__()
+        self.base_model = base_model
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        try:
+            outputs = self.base_model(images)
+        except Exception:
+            if hasattr(self.base_model, "model"):
+                outputs = self.base_model.model(images)
+            else:
+                raise
+        return _extract_features_from_outputs(outputs)
+
+    def search(self, image_paths: Sequence[Image.Image], feature_dim: int = 256):
+        if hasattr(self.base_model, "search"):
+            return self.base_model.search(image_paths=image_paths, feature_dim=feature_dim)
+        raise AttributeError("Underlying GR-Lite model does not provide .search().")
+
+
+def load_encoder(
+    encoder_backend: str,
+    params: Any,
+    infer_cfg: Any,
+    device: torch.device,
+    checkpoint_path: str,
+) -> Tuple[torch.nn.Module, Any, Any, str, List[int]]:
+    """Load image encoder + preprocess according to configured backend."""
+    if encoder_backend == "openclip":
+        if open_clip is None:
+            raise ModuleNotFoundError(
+                "open_clip is required for infer.encoder_backend=openclip. "
+                "Install with: pip install open-clip-torch"
+            )
+        clip_model, _preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
+            "hf-hub:Marqo/marqo-fashionSigLIP"
+        )
+        tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
+        clip_model = clip_model.to(device).eval()
+
+        if checkpoint_path:
+            ckpt = Path(to_absolute_path(checkpoint_path))
+            if not ckpt.exists():
+                raise FileNotFoundError(f"infer.checkpoint_path does not exist: {ckpt}")
+            payload = torch.load(ckpt, map_location=device)
+            state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+            if not isinstance(state_dict, dict):
+                raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
+            state_dict = strip_module_prefix(state_dict)
+            missing, unexpected = clip_model.load_state_dict(state_dict, strict=False)
+            print(f"Loaded checkpoint: {ckpt}")
+            print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+
+        return clip_model, tokenizer, preprocess_val, "hf-hub:Marqo/marqo-fashionSigLIP", []
+
+    try:
+        from transformers import AutoConfig, AutoModel
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "transformers is required for infer.encoder_backend=gr-lite. "
+            "Install with: pip install transformers"
+        ) from exc
+
+    model_ref = str(getattr(infer_cfg, "grlite_model_name", "srpone/gr-lite")).strip()
+    if not model_ref:
+        model_ref = "srpone/gr-lite"
+    input_size = int(getattr(infer_cfg, "grlite_input_size", 518))
+
+    print(f"Loading GR-Lite encoder from: {model_ref}")
+    config = AutoConfig.from_pretrained(model_ref, trust_remote_code=True)
+    if hasattr(config, "is_crop"):
+        config.is_crop = False
+    base_model = AutoModel.from_pretrained(
+        model_ref,
+        config=config,
+        trust_remote_code=True,
+    )
+    base_model = base_model.to(device).eval()
+
+    if checkpoint_path:
+        ckpt = Path(to_absolute_path(checkpoint_path))
+        if not ckpt.exists():
+            raise FileNotFoundError(f"infer.checkpoint_path does not exist: {ckpt}")
+        payload = torch.load(ckpt, map_location=device)
+        state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+        if not isinstance(state_dict, dict):
+            raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
+        state_dict = strip_module_prefix(state_dict)
+        missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded GR-Lite checkpoint: {ckpt}")
+        print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+
+    model: torch.nn.Module = GRLiteTensorEncoder(base_model).to(device).eval()
+    used_gpu_ids: List[int] = []
+    if device.type == "cuda" and bool(getattr(params, "multi_gpu", False)) and torch.cuda.device_count() > 1:
+        candidate_ids = parse_gpu_ids(str(getattr(params, "gpu_ids", "0,1")))
+        max_idx = torch.cuda.device_count() - 1
+        used_gpu_ids = [gid for gid in candidate_ids if 0 <= gid <= max_idx]
+        if len(used_gpu_ids) >= 2:
+            model = torch.nn.DataParallel(model, device_ids=used_gpu_ids)
+            print(f"Using GR-Lite DataParallel on GPUs: {used_gpu_ids}")
+        else:
+            print(
+                "Warning: multi_gpu enabled but fewer than 2 valid gpu_ids found. "
+                f"Available=0..{max_idx}, requested={candidate_ids}. Using single GPU."
+            )
+
+    preprocess_val = transforms.Compose(
+        [
+            transforms.Resize((input_size, input_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ]
+    )
+    return model, None, preprocess_val, model_ref, used_gpu_ids
+
+
+def encode_images(
+    encoder_backend: str,
+    image_model: torch.nn.Module,
+    imgs: torch.Tensor,
+    device: torch.device,
+    amp: bool,
+    tokenizer: Any = None,
+    texts: Optional[Sequence[str]] = None,
+    pil_images: Optional[Sequence[Image.Image]] = None,
+    grlite_feature_dim: int = 256,
+) -> torch.Tensor:
+    """Encode a batch and return normalized [B, D] embeddings."""
+    if encoder_backend == "openclip":
+        amp_enabled = amp and device.type == "cuda"
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            image_feats = image_model.encode_image(imgs).float()
+            if tokenizer is not None and texts is not None:
+                text_rows = [i for i, txt in enumerate(texts) if isinstance(txt, str) and txt.strip()]
+                if text_rows:
+                    tokens = tokenizer([texts[i] for i in text_rows]).to(device, non_blocking=True)
+                    text_feats = image_model.encode_text(tokens).float()
+                    image_feats[text_rows] = image_feats[text_rows] + text_feats
+        return F.normalize(image_feats, p=2, dim=1)
+
+    if pil_images and hasattr(image_model, "search"):
+        try:
+            rgb_images = [img.convert("RGB") if img.mode != "RGB" else img for img in pil_images]
+            _, embeddings = image_model.search(image_paths=rgb_images, feature_dim=grlite_feature_dim)
+            image_feats = torch.as_tensor(embeddings, device=device, dtype=torch.float32)
+            if image_feats.ndim == 1:
+                image_feats = image_feats.unsqueeze(0)
+            return F.normalize(image_feats, p=2, dim=1)
+        except Exception:
+            # Fallback to direct forward pass when .search() is not available or fails.
+            pass
+
+    with torch.no_grad():
+        try:
+            outputs = image_model(imgs)
+        except Exception:
+            if hasattr(image_model, "model"):
+                outputs = image_model.model(imgs)
+            else:
+                raise
+        image_feats = _extract_features_from_outputs(outputs).float()
+    return F.normalize(image_feats, p=2, dim=1)
+
+
 @torch.inference_mode()
 def encode_product_index(
-    clip_model: torch.nn.Module,
+    encoder_backend: str,
+    image_model: torch.nn.Module,
     tokenizer,
     product_ids: Sequence[str],
     product_image_map: Dict[str, Path],
@@ -346,6 +583,7 @@ def encode_product_index(
     batch_size: int,
     num_workers: int,
     amp: bool,
+    grlite_feature_dim: int = 256,
 ) -> Tuple[List[str], torch.Tensor]:
     dataset = ProductDataset(
         product_ids=product_ids,
@@ -364,21 +602,24 @@ def encode_product_index(
 
     encoded_ids: List[str] = []
     encoded_embs: List[torch.Tensor] = []
-    amp_enabled = amp and device.type == "cuda"
-    clip_model.eval()
+    image_model.eval()
     for batch in tqdm(loader, desc="Encoding products", leave=False):
         if batch is None:
             continue
         imgs = batch["img"].to(device, non_blocking=True)
         texts = batch["text"]
-        with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            image_feats = clip_model.encode_image(imgs).float()
-            text_rows = [i for i, txt in enumerate(texts) if isinstance(txt, str) and txt.strip()]
-            if text_rows:
-                tokens = tokenizer([texts[i] for i in text_rows]).to(device, non_blocking=True)
-                text_feats = clip_model.encode_text(tokens).float()
-                image_feats[text_rows] = image_feats[text_rows] + text_feats
-            feats = F.normalize(image_feats, p=2, dim=1)
+        pil_images = batch.get("pil")
+        feats = encode_images(
+            encoder_backend=encoder_backend,
+            image_model=image_model,
+            imgs=imgs,
+            device=device,
+            amp=amp,
+            tokenizer=tokenizer,
+            texts=texts,
+            pil_images=pil_images,
+            grlite_feature_dim=grlite_feature_dim,
+        )
 
         encoded_ids.extend(batch["id"])
         encoded_embs.append(feats)
@@ -425,12 +666,15 @@ def predict_bundle_topk(
     bundle_id: str,
     bundle_image_map: Dict[str, Path],
     bundle_boxes_map: Dict[str, List[ScoredBox]],
-    clip_model: torch.nn.Module,
+    encoder_backend: str,
+    image_model: torch.nn.Module,
+    tokenizer: Any,
     preprocess_val,
     product_ids: Sequence[str],
     product_embeddings: torch.Tensor,
     device: torch.device,
     amp: bool,
+    grlite_feature_dim: int,
     retrieval_topk: int,
     max_products_per_box: int,
     box_padding: float,
@@ -457,18 +701,28 @@ def predict_bundle_topk(
         scored_boxes = [(0, 0, width, height, 1.0)]
 
     crop_tensors: List[torch.Tensor] = []
+    crop_pil_images: List[Image.Image] = []
     for x1, y1, x2, y2, _score in scored_boxes:
         ex1, ey1, ex2, ey2 = expand_box((x1, y1, x2, y2), width=width, height=height, padding=box_padding)
         crop = image.crop((ex1, ey1, ex2, ey2))
+        crop_pil_images.append(crop)
         crop_tensors.append(preprocess_val(crop))
 
     if not crop_tensors:
         return list(fallback_products[:final_k])
 
     crops = torch.stack(crop_tensors, dim=0).to(device, non_blocking=True)
-    with torch.autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
-        crop_embs = clip_model.encode_image(crops).float()
-        crop_embs = F.normalize(crop_embs, p=2, dim=1)
+    crop_embs = encode_images(
+        encoder_backend=encoder_backend,
+        image_model=image_model,
+        imgs=crops,
+        device=device,
+        amp=amp,
+        tokenizer=tokenizer,
+        texts=None,
+        pil_images=crop_pil_images,
+        grlite_feature_dim=grlite_feature_dim,
+    )
 
     k = min(retrieval_topk, product_embeddings.shape[0])
     if k <= 0:
@@ -539,6 +793,7 @@ def main(cfg: InditexConfig) -> None:
     nms_iou_threshold = float(getattr(infer_cfg, "nms_iou_threshold", 0.5))
     min_box_score = float(getattr(infer_cfg, "min_box_score", 0.15))
     checkpoint_path = str(getattr(infer_cfg, "checkpoint_path", "")).strip()
+    grlite_feature_dim = int(getattr(infer_cfg, "grlite_feature_dim", 256))
     boxes_cache_path = str(getattr(infer_cfg, "boxes_cache_path", "")).strip()
     detector_conf_threshold = float(
         getattr(infer_cfg, "detector_conf_threshold", params.bbox_conf_threshold)
@@ -553,6 +808,8 @@ def main(cfg: InditexConfig) -> None:
         raise ValueError("infer.retrieval_topk must be > 0")
     if max_boxes_per_image <= 0:
         raise ValueError("infer.max_boxes_per_image must be > 0")
+    if grlite_feature_dim <= 0:
+        raise ValueError("infer.grlite_feature_dim must be > 0")
 
     seed = int(params.seed)
     set_seed(seed)
@@ -598,28 +855,23 @@ def main(cfg: InditexConfig) -> None:
         print("Gender filter disabled.")
     print(f"Category dedup: max_per_category={max_per_category} | Score threshold: {score_threshold}")
 
-    clip_model, _preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
-        "hf-hub:Marqo/marqo-fashionSigLIP"
+    encoder_backend = resolve_encoder_backend(params=params, infer_cfg=infer_cfg)
+    image_model, tokenizer, preprocess_val, model_label, used_gpu_ids = load_encoder(
+        encoder_backend=encoder_backend,
+        params=params,
+        infer_cfg=infer_cfg,
+        device=device,
+        checkpoint_path=checkpoint_path,
     )
-    tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
-    clip_model = clip_model.to(device).eval()
-
-    if checkpoint_path:
-        ckpt = Path(to_absolute_path(checkpoint_path))
-        if not ckpt.exists():
-            raise FileNotFoundError(f"infer.checkpoint_path does not exist: {ckpt}")
-        payload = torch.load(ckpt, map_location=device)
-        state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
-        if not isinstance(state_dict, dict):
-            raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
-        state_dict = strip_module_prefix(state_dict)
-        missing, unexpected = clip_model.load_state_dict(state_dict, strict=False)
-        print(f"Loaded checkpoint: {ckpt}")
-        print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+    if bool(getattr(params, "multi_gpu", False)) and encoder_backend != "gr-lite":
+        print("Warning: infer multi_gpu is currently implemented for gr-lite backend.")
+    print(f"Encoder backend: {encoder_backend} | Model: {model_label}")
+    print(f"Device: {device} | AMP: {amp_enabled} | multi_gpu={len(used_gpu_ids) >= 2}")
 
     print(f"Encoding {len(product_ids)} products on {device}...")
     encoded_product_ids, product_embeddings = encode_product_index(
-        clip_model=clip_model,
+        encoder_backend=encoder_backend,
+        image_model=image_model,
         tokenizer=tokenizer,
         product_ids=product_ids,
         product_image_map=product_image_map,
@@ -629,6 +881,7 @@ def main(cfg: InditexConfig) -> None:
         batch_size=params.batch_size,
         num_workers=params.num_workers,
         amp=amp_enabled,
+        grlite_feature_dim=grlite_feature_dim,
     )
     product_ids = encoded_product_ids
     print(f"Product index shape: {tuple(product_embeddings.shape)}")
@@ -683,12 +936,15 @@ def main(cfg: InditexConfig) -> None:
                 bundle_id=bundle_id,
                 bundle_image_map=bundle_image_map,
                 bundle_boxes_map=bundle_boxes_map,
-                clip_model=clip_model,
+                encoder_backend=encoder_backend,
+                image_model=image_model,
+                tokenizer=tokenizer,
                 preprocess_val=preprocess_val,
                 product_ids=product_ids,
                 product_embeddings=product_embeddings,
                 device=device,
                 amp=amp_enabled,
+                grlite_feature_dim=grlite_feature_dim,
                 retrieval_topk=retrieval_topk,
                 max_products_per_box=max_products_per_box,
                 box_padding=box_padding,
@@ -725,12 +981,15 @@ def main(cfg: InditexConfig) -> None:
             bundle_id=bundle_id,
             bundle_image_map=bundle_image_map,
             bundle_boxes_map=bundle_boxes_map,
-            clip_model=clip_model,
+            encoder_backend=encoder_backend,
+            image_model=image_model,
+            tokenizer=tokenizer,
             preprocess_val=preprocess_val,
             product_ids=product_ids,
             product_embeddings=product_embeddings,
             device=device,
             amp=amp_enabled,
+            grlite_feature_dim=grlite_feature_dim,
             retrieval_topk=retrieval_topk,
             max_products_per_box=max_products_per_box,
             box_padding=box_padding,
@@ -756,10 +1015,14 @@ def main(cfg: InditexConfig) -> None:
     submission_df.to_csv(submission_out, index=False)
 
     summary = {
-        "model": "hf-hub:Marqo/marqo-fashionSigLIP",
+        "encoder_backend": encoder_backend,
+        "model": model_label,
         "device": str(device),
         "amp": bool(amp_enabled),
+        "multi_gpu": bool(len(used_gpu_ids) >= 2),
+        "used_gpu_ids": used_gpu_ids,
         "checkpoint_path": checkpoint_path,
+        "grlite_feature_dim": int(grlite_feature_dim),
         "num_products_indexed": int(len(product_ids)),
         "num_test_bundles": int(len(test_bundle_ids)),
         "rows_written_submission": int(len(submission_df)),
