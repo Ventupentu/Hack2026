@@ -391,8 +391,8 @@ def main(cfg: InditexConfig) -> None:
     gender_filter = bool(getattr(cfg.infer, "gender_filter", True))
 
     # Phase 1 specific params
-    TOP_K_PER_CROP = 5       # top-K candidates per crop
-    CATEGORY_BOOST = 1.4     # boost factor for category-matching products
+    TOP_K_PER_CROP = 10      # top-K candidates per crop
+    CATEGORY_BOOST = 1.8     # boost factor for category-matching products
     MAX_PRODUCTS = 15        # max products per bundle in output
     MAX_PER_CATEGORY = 2     # max products with the same description
 
@@ -559,22 +559,37 @@ def main(cfg: InditexConfig) -> None:
     )
 
     submission_rows: List[Dict[str, str]] = []
+    
+    # We NEED exactly 15 rows per bundle, no more, no less, for the leaderboard evaluater
+    fallback_pids = list(products_df["product_asset_id"].unique())
+    
     for bid in test_bundle_ids:
         preds = test_predictions.get(bid, [])
-        for pid in preds:
+        used_pids = set(preds)
+        
+        # Add predictions we actually got
+        for pid in preds[:MAX_PRODUCTS]:
             submission_rows.append({"bundle_asset_id": bid, "product_asset_id": pid})
+            
+        # Pad with fallbacks if we have less than 15
+        needed = MAX_PRODUCTS - min(len(preds), MAX_PRODUCTS)
+        if needed > 0:
+            for fallback in fallback_pids:
+                if fallback not in used_pids:
+                    submission_rows.append({"bundle_asset_id": bid, "product_asset_id": fallback})
+                    used_pids.add(fallback)
+                    needed -= 1
+                    if needed == 0:
+                        break
 
     submission_df = pd.DataFrame(submission_rows, columns=["bundle_asset_id", "product_asset_id"])
     submission_out = output_dir / "test_submission_phase1.csv"
     submission_df.to_csv(submission_out, index=False)
 
-    preds_per_bundle = [len(test_predictions.get(bid, [])) for bid in test_bundle_ids]
     print(f"\n{'=' * 60}")
     print(f"Submission saved: {submission_out} ({len(submission_df)} rows)")
     print(f"Bundles: {len(test_bundle_ids)}")
-    print(f"Avg products/bundle: {np.mean(preds_per_bundle):.1f} "
-          f"(min={min(preds_per_bundle)}, max={max(preds_per_bundle)}, "
-          f"median={np.median(preds_per_bundle):.0f})")
+    print(f"Items per bundle: EXACTLY {MAX_PRODUCTS} (padded if needed)")
     print(f"{'=' * 60}")
 
 

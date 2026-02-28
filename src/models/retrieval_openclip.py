@@ -175,17 +175,11 @@ def _default_product_path(product_id: str, products_images_dir: Path) -> Path:
     return (products_images_dir / f"{product_id}.jpg").resolve()
 
 
-def parse_products_manifest(path: Path, products_images_dir: Path) -> Tuple[Dict[str, Path], Dict[str, str], Dict[str, int]]:
-    """Return product_id -> image_path, product_id -> text, product_id -> gender maps.
-
-    If the CSV contains a ``gender`` column (as produced by ``add_gender.py``),
-    it is loaded directly as an integer (1=mujer, 2=hombre, 3=kids, 0=unknown).
-    Otherwise every product defaults to ``0`` (unknown/unisex).
-    """
+def parse_products_manifest(path: Path, products_images_dir: Path) -> Tuple[Dict[str, Path], Dict[str, str]]:
+    """Return product_id -> image_path map and product_id -> text map."""
     rows = read_manifest_rows(path)
     product_to_image: Dict[str, Path] = {}
     product_to_text: Dict[str, str] = {}
-    product_to_gender: Dict[str, int] = {}
     for row in rows:
         pid = _first_existing_key(row, ("product_asset_id", "product_id", "asset_id", "id"))
         if not pid:
@@ -198,11 +192,9 @@ def parse_products_manifest(path: Path, products_images_dir: Path) -> Tuple[Dict
             image_path = str(_default_product_path(pid, products_images_dir))
         product_to_image[pid] = Path(image_path).expanduser().resolve()
         product_to_text[pid] = _first_existing_key(row, ("product_description", "description", "text"))
-        raw_gender = _first_existing_key(row, ("gender",))
-        product_to_gender[pid] = int(raw_gender) if raw_gender is not None and str(raw_gender).strip() != "" else 0
     if not product_to_image:
         raise RuntimeError("No product entries found in products_manifest.")
-    return product_to_image, product_to_text, product_to_gender
+    return product_to_image, product_to_text
 
 
 def parse_bundle_manifest(
@@ -336,21 +328,6 @@ def crop_with_box(image: Image.Image, box: BoxXYXY) -> Image.Image:
     return image.crop((x1, y1, x2, y2))
 
 
-_GENDER_UNKNOWN = 0  # unisex / unknown section
-
-
-def load_bundle_genders(bundles_csv: Path) -> Dict[str, int]:
-    """Return bundle_id -> section (int) from bundles_dataset.csv."""
-    rows = read_manifest_rows(bundles_csv)
-    out: Dict[str, int] = {}
-    for row in rows:
-        bid = _as_str(row.get("bundle_asset_id"))
-        section = row.get("bundle_id_section")
-        if bid and section is not None:
-            out[bid] = int(section)
-    return out
-
-
 class BundlePositiveDataset(Dataset):
     """One training sample per detected bundle region (or full image fallback)."""
 
@@ -364,8 +341,6 @@ class BundlePositiveDataset(Dataset):
         product_transform: Callable[[Image.Image], torch.Tensor],
         tokenizer: Any,
         bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
-        bundle_to_gender: Optional[Dict[str, int]] = None,
-        product_to_gender: Optional[Dict[str, int]] = None,
     ) -> None:
         self.bundle_ids = sorted(bundle_to_products.keys())
         self.bundle_to_image = bundle_to_image
@@ -376,8 +351,6 @@ class BundlePositiveDataset(Dataset):
         self.product_transform = product_transform
         self.tokenizer = tokenizer
         self.bundle_to_boxes = bundle_to_boxes or {}
-        self.bundle_to_gender = bundle_to_gender or {}
-        self.product_to_gender = product_to_gender or {}
         self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
         for bundle_id in self.bundle_ids:
             boxes = self.bundle_to_boxes.get(bundle_id, [])
@@ -405,7 +378,6 @@ class BundlePositiveDataset(Dataset):
             "product_id": product_id,
             "bundle_img": self.bundle_transform(bundle_img),
             "product_img": self.product_transform(product_img),
-            "bundle_gender_idx": self.bundle_to_gender.get(bundle_id, _GENDER_UNKNOWN),
         }
         text = self.product_to_text.get(product_id, "")
         if text:
@@ -489,47 +461,6 @@ def collate_skip_none(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dic
         else:
             out[key] = values
     return out
-
-
-def gender_aware_infonce(
-    bundle_emb: torch.Tensor,
-    product_emb: torch.Tensor,
-    gender_ids: torch.Tensor,
-    temperature: float,
-    cross_gender_penalty: float = -5.0,
-) -> torch.Tensor:
-    """Symmetric InfoNCE with cross-gender negative down-weighting.
-
-    Parameters
-    ----------
-    bundle_emb, product_emb : (B, D) normalised embeddings.
-    gender_ids : (B,) integer section id per sample.  ``0`` = unknown/unisex (never penalised).
-    temperature : logit scaling.
-    cross_gender_penalty : additive logit bias applied to pairs where both
-        genders are known *and* different.  A value of -5 effectively removes
-        them from the softmax denominator without masking them entirely (which
-        would break gradient flow).  Set to 0.0 to disable.
-
-    Returns
-    -------
-    Scalar loss (mean of b→p and p→b directions).
-    """
-    logits = (bundle_emb @ product_emb.T) / temperature  # (B, B)
-
-    if cross_gender_penalty != 0.0:
-        g = gender_ids  # (B,)
-        # same[i,j] = True when i and j have the same gender
-        same_gender = g.unsqueeze(1) == g.unsqueeze(0)                     # (B, B)
-        # either[i,j] = True when either i or j is unknown (0) → never penalise
-        either_unknown = (g.unsqueeze(1) == _GENDER_UNKNOWN) | (g.unsqueeze(0) == _GENDER_UNKNOWN)  # (B, B)
-        # Penalty mask: different known genders
-        cross_mask = (~same_gender) & (~either_unknown)                    # (B, B)
-        logits = logits + cross_mask.float() * cross_gender_penalty
-
-    targets = torch.arange(logits.shape[0], device=logits.device)
-    loss_b2p = F.cross_entropy(logits, targets)
-    loss_p2b = F.cross_entropy(logits.T, targets)
-    return 0.5 * (loss_b2p + loss_p2b)
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, total_steps: int) -> LambdaLR:
@@ -811,37 +742,13 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     image_model.train()
     core_model = get_core_clip_model(image_model)
 
-    product_to_image, product_to_text, product_to_gender = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
-
-    # Load bundle genders from bundles_dataset.csv (same directory as products)
-    bundles_csv = products_manifest.parent / "bundles_dataset.csv"
-    bundle_to_gender: Dict[str, int] = {}
-    if bundles_csv.exists():
-        bundle_to_gender = load_bundle_genders(bundles_csv)
-        gender_counts = Counter(bundle_to_gender.values())
-        print(f"Loaded bundle genders: {dict(gender_counts)}")
-    else:
-        print("Warning: bundles_dataset.csv not found, gender-aware loss disabled.")
-    product_gender_counts = Counter(product_to_gender.values())
-    print(f"Product genders: {dict(product_gender_counts)}")
-
-    # Parse full manifest and split into train/val by bundle_id
-    all_bundle_to_image, all_bundle_to_products = parse_bundle_manifest(
+    product_to_image, product_to_text = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
+    train_bundle_to_image, train_bundle_to_products = parse_bundle_manifest(
         train_manifest, product_to_image, bundles_images_dir=bundles_images_dir
     )
-    val_ratio = getattr(cfg.infer, "val_ratio", 0.1)
-    all_bundle_ids = sorted(all_bundle_to_products.keys())
-    rng = random.Random(params.seed)
-    rng.shuffle(all_bundle_ids)
-    n_val = max(1, int(len(all_bundle_ids) * val_ratio))
-    val_bundle_ids = set(all_bundle_ids[:n_val])
-    train_bundle_ids = set(all_bundle_ids[n_val:])
-    print(f"Split {len(all_bundle_ids)} bundles → train={len(train_bundle_ids)}, val={len(val_bundle_ids)} (val_ratio={val_ratio})")
-
-    train_bundle_to_image = {bid: all_bundle_to_image[bid] for bid in train_bundle_ids if bid in all_bundle_to_image}
-    train_bundle_to_products = {bid: all_bundle_to_products[bid] for bid in train_bundle_ids if bid in all_bundle_to_products}
-    val_bundle_to_image = {bid: all_bundle_to_image[bid] for bid in val_bundle_ids if bid in all_bundle_to_image}
-    val_bundle_to_products = {bid: all_bundle_to_products[bid] for bid in val_bundle_ids if bid in all_bundle_to_products}
+    val_bundle_to_image, val_bundle_to_products = parse_bundle_manifest(
+        val_manifest, product_to_image, bundles_images_dir=bundles_images_dir
+    )
     train_bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None
     val_bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None
     if params.use_bundle_boxes:
@@ -874,8 +781,6 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         product_transform=preprocess_train,
         tokenizer=tokenizer,
         bundle_to_boxes=train_bundle_to_boxes,
-        bundle_to_gender=bundle_to_gender,
-        product_to_gender=product_to_gender,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -896,6 +801,29 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     temperature = 0.07
 
     best_recall = -1.0
+    start_epoch = 1
+
+    if params.resume_from:
+        resume_path = Path(params.resume_from).expanduser().resolve()
+        if resume_path.exists():
+            print(f"Loading checkpoint for resume: {resume_path}")
+            ckpt = torch.load(resume_path, map_location="cpu")
+            core_model.load_state_dict(ckpt["model"])
+            if "optimizer" in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt["optimizer"])
+                except ValueError as e:
+                    print(f"Warning: Failed to load optimizer state dict, starting with fresh optimizer: {e}")
+            if "scaler" in ckpt and scaler is not None and ckpt["scaler"] is not None:
+                scaler.load_state_dict(ckpt["scaler"])
+            if "epoch" in ckpt:
+                start_epoch = ckpt["epoch"] + 1
+            if "best_metric" in ckpt:
+                best_recall = ckpt["best_metric"]
+            print(f"Resumed from epoch {start_epoch - 1}, best recall: {best_recall:.4f}")
+        else:
+            print(f"Warning: resume_from path not found: {resume_path}")
+
     train_boxes = sum(len(v) for v in (train_bundle_to_boxes or {}).values())
     val_boxes = sum(len(v) for v in (val_bundle_to_boxes or {}).values())
     print(
@@ -906,10 +834,9 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         f"Use bundle boxes: {bool(params.use_bundle_boxes)} | "
         f"Detected train boxes: {train_boxes} | Detected val boxes: {val_boxes}"
     )
-    use_gender_loss = bool(bundle_to_gender)
-    print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2} | gender_loss={use_gender_loss}")
+    print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2}")
 
-    for epoch in range(1, params.epochs + 1):
+    for epoch in range(start_epoch, params.epochs + 1):
         epoch_start = time.time()
         image_model.train()
         running_loss = 0.0
@@ -927,27 +854,41 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
                 bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
+                
+                # Encode products (potentially multimodal)
                 if "product_text" in batch and batch["product_text"] is not None:
                     product_texts = batch["product_text"].to(device, non_blocking=True)
                     product_emb = F.normalize(image_model(product_imgs, text=product_texts).float(), p=2, dim=1)
                 else:
                     product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
-
-                if use_gender_loss:
-                    gender_ids = torch.tensor(
-                        batch["bundle_gender_idx"], dtype=torch.long, device=device
-                    )
-                    loss = gender_aware_infonce(
-                        bundle_emb, product_emb, gender_ids,
-                        temperature=temperature,
-                        cross_gender_penalty=-5.0,
-                    )
-                else:
-                    logits = (bundle_emb @ product_emb.T) / temperature
-                    targets = torch.arange(logits.shape[0], device=device)
-                    loss_b2p = F.cross_entropy(logits, targets)
-                    loss_p2b = F.cross_entropy(logits.T, targets)
-                    loss = 0.5 * (loss_b2p + loss_p2b)
+                
+                # Forward InfoNCE text/multimodal loss
+                # Extract bundle IDs directly from the batch to create a positive mask
+                bundle_ids_list = batch["bundle_id"]
+                n_samples = len(bundle_ids_list)
+                
+                # (batch_size, batch_size): 1 where bundle_id is identical, 0 otherwise
+                pos_mask = torch.zeros((n_samples, n_samples), dtype=torch.bool, device=device)
+                for i in range(n_samples):
+                    for j in range(n_samples):
+                        if bundle_ids_list[i] == bundle_ids_list[j]:
+                            pos_mask[i, j] = True
+                
+                logits = (bundle_emb @ product_emb.T) / temperature
+                
+                # Multi-positive cross entropy loss
+                # Normalize target distribution so row sums = 1
+                target_dist = pos_mask.float()
+                target_dist = target_dist / target_dist.sum(dim=1, keepdim=True)
+                
+                log_probs_b2p = F.log_softmax(logits, dim=1)
+                loss_b2p = -(target_dist * log_probs_b2p).sum(dim=1).mean()
+                
+                log_probs_p2b = F.log_softmax(logits.T, dim=1)
+                # target_dist.T is symmetric since pos_mask is symmetric
+                loss_p2b = -(target_dist.T * log_probs_p2b).sum(dim=1).mean()
+                
+                loss = 0.5 * (loss_b2p + loss_p2b)
                 loss = loss / params.grad_accum
 
             if scaler is not None:

@@ -1,8 +1,10 @@
 """Typed Hydra config for retrieval training."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from omegaconf import MISSING
+from omegaconf import DictConfig, MISSING
 
 
 @dataclass
@@ -37,6 +39,8 @@ class Params:
     hard_neg_top_k: int = 16
     max_hard_negatives: int = 4
     max_positives: int = 8
+    # Resume training
+    resume_from: Optional[str] = None
 
 
 @dataclass
