@@ -23,17 +23,22 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from src.config import InditexConfig
+from config import InditexConfig
 
 
-class OpenCLIPImageEncoder(nn.Module):
-    """Wrapper exposing image-only forward for DataParallel."""
+class OpenCLIPMultimodalEncoder(nn.Module):
+    """Wrapper exposing multimodal forward for DataParallel."""
 
     def __init__(self, clip_model: nn.Module) -> None:
         super().__init__()
         self.clip_model = clip_model
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, text: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if text is not None:
+            image_features = self.clip_model.encode_image(images)
+            text_features = self.clip_model.encode_text(text)
+            # Combine vision and text for the product representation
+            return image_features + text_features
         return self.clip_model.encode_image(images)
 
 
@@ -126,10 +131,11 @@ def _default_product_path(product_id: str, products_images_dir: Path) -> Path:
     return (products_images_dir / f"{product_id}.jpg").resolve()
 
 
-def parse_products_manifest(path: Path, products_images_dir: Path) -> Dict[str, Path]:
-    """Return product_id -> image_path map."""
+def parse_products_manifest(path: Path, products_images_dir: Path) -> Tuple[Dict[str, Path], Dict[str, str]]:
+    """Return product_id -> image_path map and product_id -> text map."""
     rows = read_manifest_rows(path)
     product_to_image: Dict[str, Path] = {}
+    product_to_text: Dict[str, str] = {}
     for row in rows:
         pid = _first_existing_key(row, ("product_asset_id", "product_id", "asset_id", "id"))
         if not pid:
@@ -141,9 +147,10 @@ def parse_products_manifest(path: Path, products_images_dir: Path) -> Dict[str, 
         if not image_path:
             image_path = str(_default_product_path(pid, products_images_dir))
         product_to_image[pid] = Path(image_path).expanduser().resolve()
+        product_to_text[pid] = _first_existing_key(row, ("product_description", "description", "text"))
     if not product_to_image:
         raise RuntimeError("No product entries found in products_manifest.")
-    return product_to_image
+    return product_to_image, product_to_text
 
 
 def parse_bundle_manifest(
@@ -217,15 +224,19 @@ class BundlePositiveDataset(Dataset):
         bundle_to_image: Dict[str, Path],
         bundle_to_products: Dict[str, Set[str]],
         product_to_image: Dict[str, Path],
+        product_to_text: Dict[str, str],
         bundle_transform: Callable[[Image.Image], torch.Tensor],
         product_transform: Callable[[Image.Image], torch.Tensor],
+        tokenizer: Any,
     ) -> None:
         self.bundle_ids = sorted(bundle_to_products.keys())
         self.bundle_to_image = bundle_to_image
         self.bundle_to_products = {k: sorted(v) for k, v in bundle_to_products.items()}
         self.product_to_image = product_to_image
+        self.product_to_text = product_to_text
         self.bundle_transform = bundle_transform
         self.product_transform = product_transform
+        self.tokenizer = tokenizer
 
     def __len__(self) -> int:
         return len(self.bundle_ids)
@@ -238,21 +249,28 @@ class BundlePositiveDataset(Dataset):
         product_img = open_image_safe(self.product_to_image[product_id])
         if bundle_img is None or product_img is None:
             return None
-        return {
+        out = {
             "bundle_id": bundle_id,
             "product_id": product_id,
             "bundle_img": self.bundle_transform(bundle_img),
             "product_img": self.product_transform(product_img),
         }
+        text = self.product_to_text.get(product_id, "")
+        if text:
+            # Tokenizer returns a batch of 1, squeeze to [context_length]
+            out["product_text"] = self.tokenizer(text).squeeze(0)
+        return out
 
 
 class AssetImageDataset(Dataset):
     """Simple asset image dataset for encoding."""
 
-    def __init__(self, ids: Sequence[str], id_to_path: Dict[str, Path], transform) -> None:
+    def __init__(self, ids: Sequence[str], id_to_path: Dict[str, Path], transform, id_to_text: Optional[Dict[str, str]] = None, tokenizer: Any = None) -> None:
         self.ids = list(ids)
         self.id_to_path = id_to_path
         self.transform = transform
+        self.id_to_text = id_to_text
+        self.tokenizer = tokenizer
 
     def __len__(self) -> int:
         return len(self.ids)
@@ -262,7 +280,12 @@ class AssetImageDataset(Dataset):
         img = open_image_safe(self.id_to_path[asset_id])
         if img is None:
             return None
-        return {"id": asset_id, "img": self.transform(img)}
+        out = {"id": asset_id, "img": self.transform(img)}
+        if self.id_to_text is not None and self.tokenizer is not None:
+            text = self.id_to_text.get(asset_id, "")
+            if text:
+                out["text"] = self.tokenizer(text).squeeze(0)
+        return out
 
 
 def collate_skip_none(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
@@ -311,7 +334,12 @@ def encode_images(
                 continue
             imgs = batch["img"].to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
-                feats = model(imgs)
+                if "text" in batch and batch["text"] is not None:
+                    # Provide texts if available for computing text+image features
+                    texts = batch["text"].to(device, non_blocking=True)
+                    feats = model(imgs, text=texts)
+                else:
+                    feats = model(imgs)
             feats = F.normalize(feats.float(), p=2, dim=1)
             all_ids.extend(batch["id"])
             all_embs.append(feats)
@@ -329,6 +357,8 @@ def validate_retrieval(
     val_bundle_to_image: Dict[str, Path],
     val_bundle_to_products: Dict[str, Set[str]],
     product_to_image: Dict[str, Path],
+    product_to_text: Dict[str, str],
+    tokenizer: Any,
     batch_size: int,
     num_workers: int,
     max_val_k: int,
@@ -340,7 +370,7 @@ def validate_retrieval(
 
     product_ids = sorted(product_to_image.keys())
     product_loader = DataLoader(
-        AssetImageDataset(product_ids, product_to_image, preprocess_val),
+        AssetImageDataset(product_ids, product_to_image, preprocess_val, id_to_text=product_to_text, tokenizer=tokenizer),
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -488,8 +518,10 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
         "hf-hub:Marqo/marqo-fashionSigLIP"
     )
+    tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
+
     clip_model = clip_model.to(device)
-    image_model: nn.Module = OpenCLIPImageEncoder(clip_model).to(device)
+    image_model: nn.Module = OpenCLIPMultimodalEncoder(clip_model).to(device)
 
     used_gpu_ids: List[int] = []
     if device.type == "cuda" and params.multi_gpu and torch.cuda.device_count() > 1:
@@ -507,7 +539,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     image_model.train()
     core_model = get_core_clip_model(image_model)
 
-    product_to_image = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
+    product_to_image, product_to_text = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
     train_bundle_to_image, train_bundle_to_products = parse_bundle_manifest(
         train_manifest, product_to_image, bundles_images_dir=bundles_images_dir
     )
@@ -519,8 +551,10 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         bundle_to_image=train_bundle_to_image,
         bundle_to_products=train_bundle_to_products,
         product_to_image=product_to_image,
-        bundle_transform=preprocess_val,
-        product_transform=preprocess_val,
+        product_to_text=product_to_text,
+        bundle_transform=preprocess_train,
+        product_transform=preprocess_train,
+        tokenizer=tokenizer,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -563,7 +597,12 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
                 bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
-                product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
+                if "product_text" in batch and batch["product_text"] is not None:
+                    product_texts = batch["product_text"].to(device, non_blocking=True)
+                    product_emb = F.normalize(image_model(product_imgs, text=product_texts).float(), p=2, dim=1)
+                else:
+                    product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
+                
                 logits = (bundle_emb @ product_emb.T) / temperature
                 targets = torch.arange(logits.shape[0], device=device)
                 loss_b2p = F.cross_entropy(logits, targets)
@@ -607,6 +646,8 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             val_bundle_to_image=val_bundle_to_image,
             val_bundle_to_products=val_bundle_to_products,
             product_to_image=product_to_image,
+            product_to_text=product_to_text,
+            tokenizer=tokenizer,
             batch_size=params.batch_size,
             num_workers=params.num_workers,
             max_val_k=params.max_val_k,
