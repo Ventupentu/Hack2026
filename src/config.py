@@ -14,6 +14,8 @@ class Params:
     seed: int = 42
     num_workers: int = 4
     device: str = "cuda"
+    multi_gpu: bool = True
+    gpu_ids: str = "0,1"
     amp: bool = True
     grad_accum: int = 1
     log_every: int = 50
