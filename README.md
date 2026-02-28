@@ -130,6 +130,7 @@ Use `offline_augment.py` to generate additional views while preserving IDs (`bun
 python offline_augment.py \
   --bundles_manifest data/manifests/train_manifest.jsonl \
   --products_manifest data/product_dataset.csv \
+  --products_images_dir data/product_images \
   --out_dir data/offline_aug \
   --bundles_num_augs 4 \
   --products_num_augs 2 \
