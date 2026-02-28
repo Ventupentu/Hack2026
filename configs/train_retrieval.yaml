@@ -1,0 +1,20 @@
+# Pretrained-only retrieval preparation (NO fine-tuning)
+train_manifest: artifacts/manifests/train_manifest.jsonl
+val_manifest: artifacts/manifests/val_manifest.jsonl
+products_manifest: artifacts/manifests/products_manifest.jsonl
+output_dir: artifacts/retrieval
+product_embeddings: artifacts/retrieval/product_embeddings.npz
+index_dir: artifacts/retrieval/index
+index_mode: brute
+use_faiss_gpu: false
+model_name: hf-hub:Marqo/marqo-fashionSigLIP
+save_pretrained_checkpoint: true
+run_val_eval: true
+detector_model: IDEA-Research/grounding-dino-base
+detector_prompt: "shirt. t-shirt. polo shirt. sweater. sweatshirt. jacket. coat. trench. parka. blazer. overshirt. dress. skirt. trousers. pants. shorts. leggings. jeans. shoes. sneakers. boots. sandals. bag. handbag. backpack. belt. scarf. hat. glasses."
+box_threshold: 0.25
+text_threshold: 0.25
+max_boxes: 10
+padding: 0.15
+topk_per_crop: 200
+seed: 42

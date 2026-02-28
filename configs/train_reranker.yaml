@@ -1,0 +1,5 @@
+# Pretrained-only mode: reranker disabled
+mode: pretrained_only
+status: skipped
+reason: No reranker training in this setup
+instruction: Run inference/eval without --use_reranker

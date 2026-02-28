@@ -1,0 +1,26 @@
+seed: 42
+paths:
+  bundles_csv: data/bundles.csv
+  products_csv: data/products.csv
+  train_relations_csv: data/train_relations.csv
+  test_csv: data/test.csv
+  bundle_images_dir: data/bundle_images
+  product_images_dir: data/product_images
+  manifests_dir: artifacts/manifests
+  retrieval_dir: artifacts/retrieval
+  reranker_dir: artifacts/reranker
+  submission_path: artifacts/submission.csv
+model:
+  encoder_name: hf-hub:Marqo/marqo-fashionSigLIP
+  detector_name: IDEA-Research/grounding-dino-base
+  detector_prompt: "shirt. t-shirt. polo shirt. sweater. sweatshirt. jacket. coat. trench. parka. blazer. overshirt. dress. skirt. trousers. pants. shorts. leggings. jeans. shoes. sneakers. boots. sandals. bag. handbag. backpack. belt. scarf. hat. glasses."
+retrieval:
+  index_mode: brute
+  use_faiss_gpu: false
+  topk_per_crop: 200
+inference:
+  max_boxes: 10
+  box_threshold: 0.25
+  text_threshold: 0.25
+  padding: 0.15
+  final_topk: 15

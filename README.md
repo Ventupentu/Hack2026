@@ -1,205 +1,126 @@
-# Hack2026
+# Bundle-to-Product Retrieval (Pretrained-Only)
 
-## Project Goal
-Build a model that predicts product matches for fashion bundles.
+Pipeline para reconocer qué productos/prendas aparecen en una imagen de bundle y generar `submission.csv` con hasta 15 `product_asset_id` por `bundle_asset_id`.
 
-You must train using the provided training CSV files and generate the final output by completing `product_asset_id` values for test bundles.
+Configuración actual: **sin fine-tuning**.
+- Detector: GroundingDINO (`IDEA-Research/grounding-dino-base`)
+- Embeddings: FashionSigLIP (`hf-hub:Marqo/marqo-fashionSigLIP`) preentrenado
+- Retrieval: índice por similitud (brute o FAISS)
+- Reranker: desactivado por defecto (no se entrena)
 
-## Dataset Overview
+## Estructura
 
-### 1) `data/bundles_dataset.csv`
-Bundle catalog (the query side).
+- `scripts/00_download_assets.py`: descarga assets con cache/retries/concurrencia.
+- `scripts/01_build_manifests.py`: crea manifests y split 90/10 estratificado.
+- `scripts/02_train_retrieval.py`: **prepara retrieval zero-shot** (embeddings + índice + eval opcional), sin entrenamiento.
+- `scripts/03_train_reranker.py`: en modo pretrained-only deja constancia de que reranker está desactivado.
+- `scripts/04_infer_and_submit.py`: inferencia en test y generación de submission.
+- `scripts/05_eval.py`: evaluación en validación (Recall@5/10/15 + tiempo).
 
-Columns:
-- `bundle_asset_id`: Unique bundle image identifier.
-- `bundle_id_section`: Bundle section/category id.
-- `bundle_image_url`: URL of the bundle image.
+## Requisitos
 
-### 2) `data/product_dataset.csv`
-Product catalog (the candidate side).
-
-Columns:
-- `product_asset_id`: Unique product image identifier.
-- `product_image_url`: URL of the product image.
-- `product_description`: Product text description.
-
-### 3) `data/bundles_product_match_train.csv`
-Supervised training pairs (ground truth matches).
-
-Columns:
-- `bundle_asset_id`
-- `product_asset_id`
-
-Each row is a valid bundle-product match used for training.
-
-### 4) `data/bundles_product_match_test.csv`
-Test template for final prediction.
-
-Columns:
-- `bundle_asset_id`: Bundle to evaluate.
-- `product_asset_id`: Empty field to be filled by your model predictions.
-
-## How the Files Connect
-- Join train/test bundle ids with `bundles_dataset.csv` by `bundle_asset_id`.
-- Join predicted or train product ids with `product_dataset.csv` by `product_asset_id`.
-- Training signal comes from `bundles_product_match_train.csv`.
-- Final submission is based on `bundles_product_match_test.csv`.
-
-## Final Submission Rules (Important)
-
-### Purpose
-Use this dataset to deliver your final results.
-
-### Required Columns
-- `bundle_asset_id`: Identifier of the bundle image (group of products).
-- `product_asset_id`: Identifier of the product image. You must complete this column.
-
-### Format Rules
-- Even if an example shows one row per bundle, the final result must include one row per recognized product inside each bundle.
-- Multiple rows can share the same `bundle_asset_id` (one per predicted product).
-- A maximum of 15 products per bundle will be evaluated.
-- For each bundle, only the first 15 rows are considered during evaluation.
-
-## Suggested Output Behavior
-- Keep rows grouped by `bundle_asset_id`.
-- Within each bundle, sort rows by model confidence (best prediction first).
-- Cap predictions to at most 15 rows per bundle to match evaluation constraints.
-
-## Baseline: Pretrained Retrieval
-
-This repository now includes a simple baseline in `src/infer.py`:
-
-- Encoder: pretrained `torchvision` model (`resnet50` by default).
-- Method: extract normalized embeddings for all products, then retrieve top-K nearest products for each bundle.
-- Validation: computes `hit@K` and `recall@K` on a random validation split by `bundle_asset_id`.
-- Submission: writes one row per predicted product and caps at 15 products per bundle.
-
-### Run
+- Python 3.10+
+- GPU CUDA recomendada
 
 ```bash
-python -m src.infer \
-  --model-name resnet50 \
-  --batch-size 64 \
-  --val-ratio 0.2 \
-  --top-n-submit 15 \
-  --submission-out outputs/test_submission.csv \
-  --metrics-out outputs/val_metrics.json
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### Main outputs
+## Quickstart
 
-- `outputs/test_submission.csv`: file ready for upload (`bundle_asset_id,product_asset_id`).
-- `outputs/val_metrics.json`: local validation metrics and run summary.
-
-## Example Output (Format Only)
-
-```csv
-bundle_asset_id,product_asset_id
-B_xxxxx,I_aaaaa
-B_xxxxx,I_bbbbb
-B_yyyyy,I_ccccc
-```
-
-In this example, bundle `B_xxxxx` has two recognized products, so it appears in two rows.
-
-## Recommended AI Pipeline
-
-This challenge is best solved as a **multi-object visual retrieval** problem, not as a closed-set classifier.
-Also, each `product_asset_id` has only one image, so the pipeline must be robust to single-view product representations.
-
-### 1) Data Preparation
-- Validate IDs and joins across all CSVs.
-- Build train/validation splits by `bundle_asset_id` (no leakage).
-- Generate product metadata tables (`product_asset_id`, image path, `product_description`).
-
-### 2) Product Embedding Index (Offline)
-- Encode all product images into embeddings using strong vision backbones.
-- Use strong test-time augmentation (TTA) on product images (multi-crop/flip/color jitter) and average embeddings to create a more robust single product vector.
-- Store vectors and build an ANN index for fast nearest-neighbor search.
-- Keep index persistent for inference reuse.
+1. Descargar assets
 
 ```bash
-python preprocess_data.py --skip_download --out_dir data/preprocessed --val_ratio 0.1 --seed 42
+python scripts/00_download_assets.py \
+  --bundles_csv data/bundles_dataset.csv \
+  --products_csv data/product_dataset.csv \
+  --bundle_out_dir data/bundle_images \
+  --product_out_dir data/product_images \
+  --bundle_index_out artifacts/paths/bundle_paths.csv \
+  --product_index_out artifacts/paths/product_paths.csv
 ```
 
-### Offline Data Augmentation (Saved to Disk)
-
-Use `offline_augment.py` to generate additional views while preserving IDs (`bundle_asset_id` / `product_asset_id`):
+2. Construir manifests
 
 ```bash
-python offline_augment.py \
-  --bundles_manifest data/manifests/train_manifest.jsonl \
-  --products_manifest data/product_dataset.csv \
-  --products_images_dir data/product_images \
-  --out_dir data/offline_aug \
-  --bundles_num_augs 4 \
-  --products_num_augs 2 \
-  --img_size 224 \
-  --seed 42 \
-  --workers 8
+python scripts/01_build_manifests.py \
+  --bundles_csv data/bundles_dataset.csv \
+  --products_csv data/product_dataset.csv \
+  --train_relations_csv data/bundles_product_match_train.csv \
+  --bundle_paths_csv artifacts/paths/bundle_paths.csv \
+  --product_paths_csv artifacts/paths/product_paths.csv \
+  --output_dir artifacts/manifests \
+  --seed 42
 ```
 
-Outputs:
-- `data/offline_aug/bundles_aug/*.jpg`
-- `data/offline_aug/products_aug/*.jpg`
-- `data/offline_aug/bundles_aug_manifest.jsonl`
-- `data/offline_aug/products_aug_manifest.jsonl`
+3. Preparar retrieval con modelo preentrenado (sin fine-tuning)
 
-### 3) Bundle Item Detection
-- Detect item regions/crops from each bundle image.
-- Keep a fallback full-image crop for robustness when detection misses small items.
+```bash
+python scripts/02_train_retrieval.py \
+  --train_manifest artifacts/manifests/train_manifest.jsonl \
+  --val_manifest artifacts/manifests/val_manifest.jsonl \
+  --products_manifest artifacts/manifests/products_manifest.jsonl \
+  --output_dir artifacts/retrieval \
+  --product_embeddings artifacts/retrieval/product_embeddings.npz \
+  --index_dir artifacts/retrieval/index \
+  --index_mode brute \
+  --run_val_eval
+```
 
-### 4) Candidate Retrieval
-- For each bundle crop, retrieve top-K product candidates from the ANN index.
-- Use category priors from `product_description` and `bundle_id_section` to reduce false positives.
-- Apply query-time augmentation on bundle crops and fuse scores to compensate for viewpoint/background differences against single-view product images.
+4. (Opcional) registrar estado de reranker desactivado
 
-### 5) Re-ranking
-- Re-rank retrieved candidates with a pairwise scorer using:
-- Visual similarity features.
-- Detector confidence.
-- Category/section compatibility.
-- Emphasize metric-learning losses with hard negatives to improve discrimination when only one reference image exists per product.
+```bash
+python scripts/03_train_reranker.py --output_dir artifacts/reranker
+```
 
-### 6) Final Prediction & Submission
-- Merge candidates from all crops in a bundle.
-- Deduplicate `product_asset_id`.
-- Sort by confidence and keep up to the first 15 predictions per bundle.
-- Export submission CSV with one row per predicted product.
+5. Inferencia y submission
 
-### Single-Image Product Constraint (Important)
-- There is only one image per product ID, so do not rely on multi-view learning at product level.
-- Prefer embedding robustness strategies: TTA averaging, strong image normalization, and feature fusion from two complementary encoders.
-- Use retrieval + re-ranking instead of direct classification over all products, since class support is extremely sparse.
+```bash
+python scripts/04_infer_and_submit.py \
+  --test_csv data/bundles_product_match_test.csv \
+  --bundles_csv data/bundles_dataset.csv \
+  --bundle_paths_csv artifacts/paths/bundle_paths.csv \
+  --products_manifest artifacts/manifests/products_manifest.jsonl \
+  --retrieval_checkpoint artifacts/retrieval/pretrained_encoder.pt \
+  --product_embeddings artifacts/retrieval/product_embeddings.npz \
+  --index_dir artifacts/retrieval/index \
+  --max_boxes 10 \
+  --padding 0.15 \
+  --topk_per_crop 200 \
+  --submission_out artifacts/submission.csv
+```
 
-## Recommended Technologies
+6. Evaluación
 
-### Core Framework
-- `Python 3.11+`
-- `PyTorch`
-- `torchvision`
-- `pandas`, `numpy`
+```bash
+python scripts/05_eval.py \
+  --val_manifest artifacts/manifests/val_manifest.jsonl \
+  --products_manifest artifacts/manifests/products_manifest.jsonl \
+  --retrieval_checkpoint artifacts/retrieval/pretrained_encoder.pt \
+  --product_embeddings artifacts/retrieval/product_embeddings.npz \
+  --index_dir artifacts/retrieval/index \
+  --max_boxes 10 \
+  --padding 0.15 \
+  --topk_per_crop 200 \
+  --report_out artifacts/eval_report.json
+```
 
-### Feature Extraction / Encoders
-- `transformers` + `timm`
-- `SigLIP` (image-text aligned embeddings)
-- `DINOv2` (strong visual embeddings)
+## Outputs
 
-### Detection & Localization
-- `GroundingDINO` (open-vocabulary detection), or `OWL-ViT` as alternative
-- Optional: `segment-anything` for tighter crops if needed
+- `artifacts/paths/*.csv`: rutas locales de imágenes.
+- `artifacts/manifests/*.jsonl`: manifests train/val/products.
+- `artifacts/retrieval/product_embeddings.npz`: embeddings del catálogo.
+- `artifacts/retrieval/index/`: índice retrieval persistido.
+- `artifacts/retrieval/pretrained_encoder.pt`: snapshot del encoder preentrenado.
+- `artifacts/retrieval/metrics.jsonl`: métricas de la fase zero-shot.
+- `artifacts/retrieval/pretrained_report.json`: resumen de recall y tiempos.
+- `artifacts/submission.csv`: submission final.
 
-### Retrieval
-- `FAISS` for ANN index and similarity search
-- Embedding-time and query-time TTA fusion to stabilize nearest-neighbor ranking under single-image-per-product conditions
+## Notas
 
-### Re-ranking
-- `LightGBM` ranker or a small `PyTorch` MLP scorer
-
-### Training / Experimentation
-- `Hydra` for configuration management
-- `Weights & Biases` or `MLflow` for experiment tracking
-
-### Inference & Output
-- Batched GPU inference for embeddings and detection
-- Deterministic post-processing to enforce top-15-per-bundle output constraint
+- No se entrena encoder ni reranker.
+- No se usa `product_description` para filtrar o clasificar.
+- Si GroundingDINO devuelve pocas cajas, se activa fallback de multi-crops.

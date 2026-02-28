@@ -1,0 +1,8 @@
+{
+  "num_products": 27688,
+  "num_train_bundles": 1688,
+  "num_val_bundles": 188,
+  "avg_train_positives": 3.4674170616113744,
+  "avg_val_positives": 3.404255319148936,
+  "seed": 42
+}
