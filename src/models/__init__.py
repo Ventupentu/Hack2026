@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.config import InditexConfig
-from src.models.retrieval_openclip import train_openclip_retrieval
+from config import InditexConfig
+from models.retrieval_openclip import train_openclip_retrieval
 
 
 def train_retrieval_model(

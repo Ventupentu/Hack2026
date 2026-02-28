@@ -2,6 +2,6 @@
 train_manifest: data/bundles_product_match_train.csv
 val_manifest: data/bundles_product_match_train.csv
 products_manifest: data/product_dataset.csv
-bundles_images: data/images/bundles
-products_images: data/images/products
+bundles_images: data/bundle_images
+products_images: data/product_images
 output_dir: outputs/retrieval_openclip

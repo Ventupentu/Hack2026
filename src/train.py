@@ -8,8 +8,8 @@ import hydra
 from hydra.core.config_store import ConfigStore
 from hydra.utils import to_absolute_path
 
-from src.config import InditexConfig
-from src.models import train_retrieval_model
+from config import InditexConfig
+from models import train_retrieval_model
 
 
 cs = ConfigStore.instance()

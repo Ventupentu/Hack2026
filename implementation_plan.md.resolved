@@ -1,0 +1,134 @@
+# Improving Bundle→Product Retrieval (recall@15 ≈ 0.65 → ?)
+
+## Current Situation
+
+| Metric | Value |
+|---|---|
+| Best recall@15 | **0.6506** (epoch 18) |
+| Final train loss | 0.544 |
+| Model | Marqo/marqo-fashionSigLIP |
+| Training pairs | 6,493 (1,876 bundles, avg 3.46 prods/bundle) |
+| Candidate products | 27,689 |
+| Batch size | 128 (grad_accum=2, effective=256) |
+| Epochs | 20 |
+| Fusion | Simple addition (image_feat + text_feat) |
+
+The loss is still decreasing at epoch 20, and recall is plateauing around 0.65. Key bottlenecks:
+
+1. **Training sees only 1 positive per bundle per epoch** — wastes the multi-product structure
+2. **Only in-batch negatives** — with BS=128, the model never sees the hard negatives from the full 27K product gallery
+3. **Additive fusion** is naive — the text and image features have different magnitudes
+4. **No re-ranking or TTA at inference**
+
+## Proposed Improvements (Ranked by Expected Impact)
+
+---
+
+### 🔴 High Impact
+
+#### 1. Hard Negative Mining with Full Gallery Embeddings
+**Expected gain: +5–10% recall**
+
+Currently the contrastive loss only uses in-batch negatives (127 negatives per sample). With 27K products, the model doesn't learn to distinguish similar-looking but wrong products.
+
+**Approach**: Every N epochs, pre-compute all product embeddings, find the top-K hardest negatives per bundle, and mine them into training batches.
+
+#### [MODIFY] [retrieval_openclip.py](file:///home/julio/coding/Hack2026/src/models/retrieval_openclip.py)
+- Add `HardNegativeDataset` that includes pre-mined hard negatives alongside the random positive
+- Modify the training loop to periodically re-compute the gallery embeddings and update hard negative lists
+- Change loss to handle semi-hard negatives (margin-based or mixed with in-batch)
+
+---
+
+#### 2. Multi-Positive Contrastive Loss
+**Expected gain: +3–5% recall**
+
+Each bundle has 1–11 products (avg 3.46). The current training picks only 1 positive per sample. This means the model misses alignment signals for the other products. 
+
+**Approach**: Sample multiple positives per bundle and use a multi-positive InfoNCE loss.
+
+#### [MODIFY] [retrieval_openclip.py](file:///home/julio/coding/Hack2026/src/models/retrieval_openclip.py)
+- Change `BundlePositiveDataset.__getitem__` to return **all positives** (or up to max_k) per bundle
+- Implement custom collate to handle variable-length positive sets
+- Replace cross-entropy loss with multi-positive NCE: `L = -log(sum(exp(s_pos)) / sum(exp(s_all)))`
+
+---
+
+#### 3. Learnable Temperature
+**Expected gain: +1–3% recall**
+
+The temperature `τ=0.07` is hardcoded. A learnable temperature (like CLIP uses, initialized at 0.07 and clamped) adapts to the embedding space as training progresses.
+
+#### [MODIFY] [retrieval_openclip.py](file:///home/julio/coding/Hack2026/src/models/retrieval_openclip.py)
+- Replace `temperature = 0.07` with `log_temperature = nn.Parameter(torch.log(torch.tensor(0.07)))` 
+- Use `temperature = log_temperature.exp().clamp(min=0.01, max=0.5)` in loss computation
+
+---
+
+### 🟡 Medium Impact
+
+#### 4. Weighted Text+Image Fusion (Learned Gate)
+**Expected gain: +1–3% recall**
+
+Simple addition ignores magnitude differences. A learned gate or MLP projection would fuse modalities more effectively.
+
+#### [MODIFY] [retrieval_openclip.py](file:///home/julio/coding/Hack2026/src/models/retrieval_openclip.py)
+- Add a learnable gating parameter `alpha`: `combined = alpha * image_features + (1 - alpha) * text_features`
+- Or optionally use a small MLP: `combined = proj(cat(image_features, text_features))`
+
+---
+
+#### 5. Test-Time Augmentation (TTA) at Inference
+**Expected gain: +1–2% recall**
+
+Average embeddings from multiple augmented views of each bundle image at inference time.
+
+#### [MODIFY] [infer_openclip.py](file:///home/julio/coding/Hack2026/src/infer_openclip.py)
+- For each bundle image, create N augmented views (flips, small crops)
+- Average the resulting embeddings before retrieval
+
+---
+
+#### 6. Train Longer with Warm Restarts
+**Expected gain: +1–3% recall**
+
+The loss was still decreasing at epoch 20. Training for more epochs with cosine warm restarts can find better minima.
+
+#### [MODIFY] [config.yaml](file:///home/julio/coding/Hack2026/config/config.yaml)
+- Increase epochs to 40–50
+- Use cosine warm restart schedule (CosineAnnealingWarmRestarts)
+
+---
+
+### 🟢 Lower Impact but Easy
+
+#### 7. Section-Aware Negative Sampling
+The bundles have `bundle_id_section` (sections 1, 2, 3). Products within the same section are harder negatives. Could weight in-batch negatives by section proximity.
+
+#### 8. Higher Resolution Crops
+Bundle images contain multiple products. Processing at higher resolution could help the model see individual items better. SigLIP supports 384px — currently likely using 224.
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> Which improvements should I implement first? I recommend starting with **items 1–3** (hard negative mining, multi-positive loss, learnable temperature) as a single iteration, as they are the highest impact and complementary. The changes are all in [retrieval_openclip.py](file:///home/julio/coding/Hack2026/src/models/retrieval_openclip.py).
+
+> [!WARNING]  
+> Hard negative mining requires re-encoding the full product gallery periodically during training, which adds ~2 min per mining step. With a mining frequency of every 2-3 epochs, this is manageable.
+
+Questions:
+1. How much GPU memory is available? (for deciding batch size with hard negatives)
+2. Do you want me to implement all of 1–3 together, or go step by step?
+3. Do you have a time constraint for training? (helps decide epochs / mining frequency)
+
+## Verification Plan
+
+### Automated Tests
+- Train with modified code for 5 epochs and verify recall@15 > 0.50 (sanity check)
+- Compare recall@15 at epoch 20 between baseline (0.6506) and new approach
+
+### Manual Verification  
+- After training finishes, run inference with [infer_openclip.py](file:///home/julio/coding/Hack2026/src/infer_openclip.py) and generate submission
+- User uploads to competition leaderboard to verify real-world improvement

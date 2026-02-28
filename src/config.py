@@ -15,7 +15,7 @@ class Params:
     num_workers: int = 4
     device: str = "cuda"
     model_name: str = "openclip_marqo_siglip"
-    multi_gpu: bool = True
+    multi_gpu: bool = False
     gpu_ids: str = "0,1"
     amp: bool = True
     grad_accum: int = 1
