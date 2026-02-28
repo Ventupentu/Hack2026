@@ -20,3 +20,10 @@ params:
   save_every: 1
   max_val_k: 200
   recall_k: 15
+  use_bundle_boxes: true
+  bbox_model_id: kesimeg/yolov8n-clothing-detection
+  bbox_conf_threshold: 0.25
+  bbox_iou_threshold: 0.45
+  bbox_max_per_image: 15
+  bbox_min_area_ratio: 0.001
+  bbox_cache_path: ""
