@@ -14,9 +14,41 @@ from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
 MODEL_ID = "valentinafeve/yolos-fashionpedia"
-BOX_THRESHOLD = 0.90
+BOX_THRESHOLD = 0.60
 MAX_IMAGES = 10
 OUTPUT_DIR = Path("/scratch/tesla8/sgrodriguez23/yolo_outputs")
+
+# YOLOS-Fashionpedia labels that map to our product categories.
+# Parts-of-garment labels (sleeve, collar, neckline, pocket, etc.) are excluded.
+KEEP_LABELS: set[str] = {
+    "shirt, blouse",
+    "top, t-shirt, sweatshirt",
+    "sweater",
+    "cardigan",
+    "jacket",
+    "vest",
+    "pants",
+    "shorts",
+    "skirt",
+    "coat",
+    "dress",
+    "jumpsuit",
+    "cape",
+    "glasses",
+    "hat",
+    "headband, head covering, hair accessory",
+    "tie",
+    "glove",
+    "watch",
+    "belt",
+    "leg warmer",
+    "tights, stockings",
+    "sock",
+    "shoe",
+    "bag, wallet",
+    "scarf",
+    "umbrella",
+}
 
 
 def load_bundle_image_ids(bundles_csv: Path, max_images: int | None = None) -> List[str]:
@@ -84,6 +116,8 @@ def main(cfg: DictConfig) -> None:
         ):
             x1, y1, x2, y2 = map(int, box.tolist())
             label = id2label[label_id.item()]
+            if label not in KEEP_LABELS:
+                continue
             text = f"{label} {score:.2f}"
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
