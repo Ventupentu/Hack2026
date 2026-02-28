@@ -196,4 +196,26 @@ python preprocess_data.py --skip_download --out_dir data/preprocessed --val_rati
 
 ### Inference & Output
 - Batched GPU inference for embeddings and detection
+
+To run it 
+
+  pip install -r requirements.txt
+  python -m src.infer \
+    --model-name fashionclip \
+    --device cuda \
+    --gpu-ids 0,1 \
+    --batch-size 64 \
+    --num-workers 8 \
+    --amp \
+    --bundle-view-mode full+5crop \
+    --score-agg max \
+    --product-tta-flip \
+    --use-section-prior \
+    --val-ratio 0.2 \
+    --top-n-submit 15 \
+    --submission-out outputs/test_submission.csv \
+    --metrics-out outputs/val_metrics.json
+
+
+
 - Deterministic post-processing to enforce top-15-per-bundle output constraint
