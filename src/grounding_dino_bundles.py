@@ -7,7 +7,9 @@ from typing import List, Set
 import cv2
 import hydra
 import pandas as pd
+import torch
 from omegaconf import DictConfig
+from PIL import Image
 from tqdm import tqdm
 
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
@@ -15,7 +17,8 @@ from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 MODEL_ID = "IDEA-Research/grounding-dino-base"  # or grounding-dino-tiny to go faster
 BOX_THRESHOLD = 0.30
 TEXT_THRESHOLD = 0.25
-MAX_IMAGES = 50 
+MAX_IMAGES = 10
+OUTPUT_DIR = Path("scratch/tesla8/sgrodriguez23/dino_outputs")
 
 def load_categories(product_csv: Path) -> List[str]:
     """
@@ -58,7 +61,7 @@ def main(cfg: DictConfig) -> None:
     product_csv = Path(cfg.files.product_dataset)
     bundles_images_dir = Path(cfg.files.bundles_images)
 
-    out_dir = Path("outputs/grounding_dino")
+    out_dir = OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("Cargando categorías...")
@@ -70,12 +73,12 @@ def main(cfg: DictConfig) -> None:
     classes_prompt = " . ".join(categories) + " ."
 
     print("Inicializando modelo Grounding DINO...")
-    base_model = GroundingDINO(
-        ontology={c: c for c in categories}  # mapping label->prompt
-    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    processor = AutoProcessor.from_pretrained(MODEL_ID)
+    model = AutoModelForZeroShotObjectDetection.from_pretrained(MODEL_ID).to(device)
 
     bundle_ids = load_bundle_image_ids(
-        bundles_csv, max_images=cfg.get("max_images", 50)  # para pruebas rápidas
+        bundles_csv, max_images=cfg.get("max_images", MAX_IMAGES)  # para pruebas rápidas
     )
     print(f"Procesando {len(bundle_ids)} imágenes...")
 
@@ -85,18 +88,27 @@ def main(cfg: DictConfig) -> None:
             continue
 
         # Predicción
-        result = base_model.predict(str(img_path))
+        pil_image = Image.open(img_path).convert("RGB")
+        inputs = processor(images=pil_image, text=classes_prompt, return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        results = processor.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
+            box_threshold=BOX_THRESHOLD,
+            text_threshold=TEXT_THRESHOLD,
+            target_sizes=[pil_image.size[::-1]],
+        )[0]
 
         # Dibujado simple
         img = cv2.imread(str(img_path))
         if img is None:
             continue
 
-        # result.xyxy, result.class_id, result.confidence (formato supervision)
-        for xyxy, cls_id, conf in zip(result.xyxy, result.class_id, result.confidence):
-            x1, y1, x2, y2 = map(int, xyxy)
-            label = categories[int(cls_id)] if int(cls_id) < len(categories) else "unknown"
-            text = f"{label} {conf:.2f}"
+        # results contiene: boxes (xyxy), scores, labels (texto)
+        for box, score, label in zip(results["boxes"], results["scores"], results["labels"]):
+            x1, y1, x2, y2 = map(int, box.tolist())
+            text = f"{label} {score:.2f}"
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
                 img, text, (x1, max(20, y1 - 8)),
