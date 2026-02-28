@@ -203,3 +203,57 @@ Outputs:
 ### Inference & Output
 - Batched GPU inference for embeddings and detection
 - Deterministic post-processing to enforce top-15-per-bundle output constraint
+
+## Hugging Face Hub Auto-Publish (Open-Source + Traceability)
+
+This project includes optional automatic synchronization to a Hugging Face **model repo** during training and inference.
+
+For the complete Spanish guide (setup, architecture, justifications, and evaluation framing), see:
+- `README_HUGGINGFACE.md`
+
+What gets published:
+- Training checkpoints (`epoch_*.pt`, `best.pt`)
+- Latest production checkpoint mirror (`checkpoints/best.pt`)
+- Metrics (`metrics.jsonl`)
+- Inference outputs (submission CSV + metrics JSON)
+- Traceability artifacts (`traceability/*.json`) with:
+- SHA256 hashes for checkpoints and outputs
+- Resolved config snapshot
+- Git commit/branch/dirty state
+- Runtime environment metadata
+
+### 1) Install
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2) Authenticate
+
+```bash
+export HF_TOKEN=hf_xxx_your_token
+```
+
+### 3) Train with auto-sync
+
+```bash
+python -m src.train \
+  hub.enabled=true \
+  hub.repo_id=YOUR_USER/YOUR_MODEL_REPO \
+  hub.push_every_epoch=true \
+  hub.push_best=true
+```
+
+### 4) Run inference with auto-sync
+
+```bash
+python -m src.infer \
+  hub.enabled=true \
+  hub.repo_id=YOUR_USER/YOUR_MODEL_REPO \
+  hub.push_inference=true \
+  infer.checkpoint_path=outputs/retrieval_openclip/best.pt
+```
+
+### Notes
+- If `HF_TOKEN` is not set, `huggingface_hub` can still use your local CLI login.
+- Set `hub.fail_on_error=true` to make HF sync failures stop the run.

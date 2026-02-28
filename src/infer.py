@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from src.config import InditexConfig
 from src.detection import ClothingYOLODetector
+from src.utils.hf_hub_sync import HFHubSync
 from src.utils.metrics import evaluate_bundle_retrieval
 
 cs = ConfigStore.instance()
@@ -604,6 +605,7 @@ def main(cfg: InditexConfig) -> None:
     tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
     clip_model = clip_model.to(device).eval()
 
+    checkpoint_used_path: Optional[Path] = None
     if checkpoint_path:
         ckpt = Path(to_absolute_path(checkpoint_path))
         if not ckpt.exists():
@@ -616,6 +618,7 @@ def main(cfg: InditexConfig) -> None:
         missing, unexpected = clip_model.load_state_dict(state_dict, strict=False)
         print(f"Loaded checkpoint: {ckpt}")
         print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+        checkpoint_used_path = ckpt
 
     print(f"Encoding {len(product_ids)} products on {device}...")
     encoded_product_ids, product_embeddings = encode_product_index(
@@ -776,6 +779,32 @@ def main(cfg: InditexConfig) -> None:
 
     print(f"Saved submission: {submission_out} ({len(submission_df)} rows)")
     print(f"Saved metrics: {metrics_out}")
+
+    hub_sync = HFHubSync.from_config(cfg=cfg, artifact_root=output_dir, stage="inference")
+    hub_sync.start_run(
+        cfg=cfg,
+        data_files={
+            "bundles_csv": bundles_csv,
+            "products_csv": products_csv,
+            "train_csv": train_csv,
+            "test_csv": test_csv,
+        },
+        extra={"output_dir": str(output_dir), "script": "src.infer"},
+    )
+    hub_sync.publish_inference(
+        cfg=cfg,
+        submission_path=submission_out,
+        metrics_path=metrics_out,
+        checkpoint_path=checkpoint_used_path,
+        summary=summary,
+        data_files={
+            "bundles_csv": bundles_csv,
+            "products_csv": products_csv,
+            "train_csv": train_csv,
+            "test_csv": test_csv,
+        },
+        push_inference=bool(getattr(cfg.hub, "push_inference", True)),
+    )
 
 
 if __name__ == "__main__":

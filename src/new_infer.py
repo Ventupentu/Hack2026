@@ -44,6 +44,7 @@ from omegaconf import OmegaConf
 
 from src.config import InditexConfig
 from src.detection import ClothingYOLODetector, ScoredBox, BoxXYXY
+from src.utils.hf_hub_sync import HFHubSync
 from src.utils.metrics import evaluate_bundle_retrieval
 
 try:
@@ -768,6 +769,11 @@ def main(cfg: InditexConfig) -> None:
     print("INFER v8 — Per-crop retrieval + TTA + Post-processing")
     print("=" * 60)
     model, preprocess, tokenizer = load_openclip_model(checkpoint_path, device)
+    checkpoint_used_path: Optional[Path] = None
+    if checkpoint_path:
+        candidate = Path(checkpoint_path).expanduser()
+        if candidate.exists():
+            checkpoint_used_path = candidate.resolve()
     print(f"Device: {device} | AMP: {amp} | TTA: {n_tta} | TopK/crop: {per_crop_topk}")
 
     # ---- Load data ----
@@ -895,6 +901,45 @@ def main(cfg: InditexConfig) -> None:
     print(f"Submission saved: {submission_out} ({len(submission_df)} rows)")
     print(f"Bundles: {len(test_bundle_ids)} | Avg products/bundle: {len(submission_df)/len(test_bundle_ids):.1f}")
     print(f"{'=' * 60}")
+
+    summary = {
+        "model": "hf-hub:Marqo/marqo-fashionSigLIP",
+        "checkpoint_path": str(checkpoint_path),
+        "device": str(device),
+        "amp": bool(amp),
+        "tta_num_augs": int(n_tta),
+        "per_crop_topk": int(per_crop_topk),
+        "top_n_submit": int(top_n_submit),
+        "num_products_indexed": int(len(encoded_pids)),
+        "num_test_bundles": int(len(test_bundle_ids)),
+        "rows_written_submission": int(len(submission_df)),
+    }
+
+    hub_sync = HFHubSync.from_config(cfg=cfg, artifact_root=output_dir, stage="inference")
+    hub_sync.start_run(
+        cfg=cfg,
+        data_files={
+            "bundles_csv": bundles_csv,
+            "products_csv": products_csv,
+            "train_csv": train_csv,
+            "test_csv": test_csv,
+        },
+        extra={"output_dir": str(output_dir), "script": "src.new_infer"},
+    )
+    hub_sync.publish_inference(
+        cfg=cfg,
+        submission_path=submission_out,
+        metrics_path=metrics_out if val_ratio > 0 else output_dir / "val_metrics_v8.json",
+        checkpoint_path=checkpoint_used_path,
+        summary=summary,
+        data_files={
+            "bundles_csv": bundles_csv,
+            "products_csv": products_csv,
+            "train_csv": train_csv,
+            "test_csv": test_csv,
+        },
+        push_inference=bool(getattr(cfg.hub, "push_inference", True)),
+    )
 
 
 if __name__ == "__main__":

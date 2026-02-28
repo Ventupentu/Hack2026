@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from src.config import InditexConfig
 from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
+from src.utils.hf_hub_sync import HFHubSync
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):
@@ -786,6 +787,21 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
     ensure_dir(output_dir)
     metrics_path = output_dir / "metrics.jsonl"
+    hub_sync = HFHubSync.from_config(cfg=cfg, artifact_root=output_dir, stage="train")
+    bundles_csv = products_manifest.parent / "bundles_dataset.csv"
+    hub_sync.start_run(
+        cfg=cfg,
+        data_files={
+            "train_manifest": train_manifest,
+            "val_manifest": val_manifest,
+            "products_manifest": products_manifest,
+            "bundles_dataset": bundles_csv,
+        },
+        extra={"output_dir": str(output_dir)},
+    )
+
+    hub_push_every_epoch = bool(getattr(cfg.hub, "push_every_epoch", True))
+    hub_push_best = bool(getattr(cfg.hub, "push_best", True))
 
     clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
         "hf-hub:Marqo/marqo-fashionSigLIP"
@@ -814,7 +830,6 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     product_to_image, product_to_text, product_to_gender = parse_products_manifest(products_manifest, products_images_dir=products_images_dir)
 
     # Load bundle genders from bundles_dataset.csv (same directory as products)
-    bundles_csv = products_manifest.parent / "bundles_dataset.csv"
     bundle_to_gender: Dict[str, int] = {}
     if bundles_csv.exists():
         bundle_to_gender = load_bundle_genders(bundles_csv)
@@ -896,6 +911,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     temperature = 0.07
 
     best_recall = -1.0
+    best_epoch = 0
     train_boxes = sum(len(v) for v in (train_bundle_to_boxes or {}).values())
     val_boxes = sum(len(v) for v in (val_bundle_to_boxes or {}).values())
     print(
@@ -1010,20 +1026,33 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         append_metrics(metrics_path, metric_row)
 
         if epoch % params.save_every == 0:
+            epoch_ckpt_path = output_dir / f"epoch_{epoch}.pt"
             save_checkpoint(
-                path=output_dir / f"epoch_{epoch}.pt",
+                path=epoch_ckpt_path,
                 model=core_model,
                 optimizer=optimizer,
                 scaler=scaler,
                 epoch=epoch,
                 best_metric=best_recall,
                 cfg=cfg,
+            )
+            hub_sync.publish_train_event(
+                epoch=epoch,
+                metric_name=f"recall@{params.recall_k}",
+                metric_value=float(recall_val),
+                metrics_path=metrics_path,
+                checkpoint_path=epoch_ckpt_path,
+                is_best=False,
+                push_every_epoch=hub_push_every_epoch,
+                push_best=hub_push_best,
             )
 
         if recall_val > best_recall:
             best_recall = recall_val
+            best_epoch = epoch
+            best_ckpt_path = output_dir / "best.pt"
             save_checkpoint(
-                path=output_dir / "best.pt",
+                path=best_ckpt_path,
                 model=core_model,
                 optimizer=optimizer,
                 scaler=scaler,
@@ -1031,5 +1060,23 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 best_metric=best_recall,
                 cfg=cfg,
             )
+            hub_sync.publish_train_event(
+                epoch=epoch,
+                metric_name=f"recall@{params.recall_k}",
+                metric_value=float(recall_val),
+                metrics_path=metrics_path,
+                checkpoint_path=best_ckpt_path,
+                is_best=True,
+                push_every_epoch=hub_push_every_epoch,
+                push_best=hub_push_best,
+            )
 
     print(f"Training complete. Best recall@{params.recall_k}: {best_recall:.6f}")
+    best_ckpt_path = output_dir / "best.pt"
+    hub_sync.publish_train_complete(
+        best_epoch=best_epoch,
+        best_metric_name=f"recall@{params.recall_k}",
+        best_metric_value=float(best_recall),
+        metrics_path=metrics_path,
+        best_checkpoint_path=best_ckpt_path if best_ckpt_path.exists() else None,
+    )

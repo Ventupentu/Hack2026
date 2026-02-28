@@ -1,6 +1,7 @@
 """Typed Hydra config for retrieval training."""
 
 from dataclasses import dataclass, field
+from typing import List
 
 from omegaconf import MISSING
 
@@ -69,9 +70,41 @@ class Infer:
 
 
 @dataclass
+class Hub:
+    """Hugging Face Hub synchronization settings."""
+
+    enabled: bool = False
+    repo_id: str = ""
+    private: bool = False
+    token_env: str = "HF_TOKEN"
+    fail_on_error: bool = False
+    create_pr: bool = False
+    push_every_epoch: bool = True
+    push_best: bool = True
+    push_inference: bool = True
+    run_name: str = ""
+    remote_train_dir: str = "artifacts/train"
+    remote_infer_dir: str = "artifacts/infer"
+    license: str = "apache-2.0"
+    pipeline_tag: str = "image-feature-extraction"
+    base_model: str = "Marqo/marqo-fashionSigLIP"
+    datasets: List[str] = field(default_factory=lambda: ["local/inditex-fashion-bundle-match"])
+    tags: List[str] = field(
+        default_factory=lambda: [
+            "computer-vision",
+            "image-retrieval",
+            "open-source",
+            "fashion",
+            "openclip",
+        ]
+    )
+
+
+@dataclass
 class InditexConfig:
     """Root config."""
 
     params: Params = field(default_factory=Params)
     files: Files = field(default_factory=Files)
     infer: "Infer" = field(default_factory=lambda: Infer())
+    hub: "Hub" = field(default_factory=lambda: Hub())

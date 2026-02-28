@@ -6,3 +6,4 @@ requests
 hydra-core
 torch
 torchvision
+huggingface_hub
