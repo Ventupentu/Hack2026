@@ -70,6 +70,14 @@ class Infer:
     max_per_category: int = 2
     # Score threshold: discard products below this cosine similarity
     score_threshold: float = 0.0
+    # Timestamp-aware rerank (score += adjustment_from_delta_ts)
+    ts_rerank_enabled: bool = False
+    ts_delta_weight: float = 0.0
+    ts_decay_hours: float = 720.0
+    ts_bonus_same_date: float = 0.0
+    ts_bonus_same_month: float = 0.0
+    ts_bonus_same_quarter: float = 0.0
+    ts_penalty_diff_quarter: float = 0.0
 
 
 @dataclass
