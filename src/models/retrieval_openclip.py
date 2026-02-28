@@ -23,7 +23,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from config import InditexConfig
+from src.config import InditexConfig
+from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):
@@ -62,6 +63,49 @@ def resolve_device(device_name: str) -> torch.device:
 def ensure_dir(path: Path) -> None:
     """Create folder if needed."""
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_box(value: Any) -> Optional[BoxXYXY]:
+    """Parse and validate one XYXY box from cache/json."""
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return None
+    try:
+        x1, y1, x2, y2 = [int(round(float(v))) for v in value[:4]]
+    except (TypeError, ValueError):
+        return None
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def load_boxes_cache(path: Path) -> Dict[str, List[BoxXYXY]]:
+    """Load cached bundle boxes from json."""
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return {}
+    out: Dict[str, List[BoxXYXY]] = {}
+    for bundle_id, boxes in payload.items():
+        if not isinstance(bundle_id, str) or not isinstance(boxes, list):
+            continue
+        clean_boxes: List[BoxXYXY] = []
+        for box in boxes:
+            norm = _normalize_box(box)
+            if norm is not None:
+                clean_boxes.append(norm)
+        out[bundle_id] = clean_boxes
+    return out
+
+
+def save_boxes_cache(path: Path, bundle_to_boxes: Dict[str, List[BoxXYXY]]) -> None:
+    """Write bundle boxes cache to json."""
+    ensure_dir(path.parent)
+    payload = {
+        bid: [list(box) for box in boxes]
+        for bid, boxes in bundle_to_boxes.items()
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def read_manifest_rows(path: Path) -> List[Dict[str, Any]]:
@@ -203,6 +247,56 @@ def parse_bundle_manifest(
     return bundle_to_image, filtered
 
 
+def detect_bundle_boxes_with_cache(
+    bundle_to_image: Dict[str, Path],
+    output_dir: Path,
+    model_id: str,
+    conf_threshold: float,
+    iou_threshold: float,
+    max_boxes_per_image: int,
+    min_area_ratio: float,
+    cache_path: str,
+) -> Dict[str, List[BoxXYXY]]:
+    """Detect and cache XYXY boxes for each bundle image."""
+    resolved_cache = (
+        Path(cache_path).expanduser().resolve()
+        if cache_path
+        else (output_dir / "bundle_boxes_cache.json").resolve()
+    )
+
+    bundle_to_boxes = load_boxes_cache(resolved_cache)
+    missing = {
+        bundle_id: image_path
+        for bundle_id, image_path in bundle_to_image.items()
+        if bundle_id not in bundle_to_boxes
+    }
+
+    if missing:
+        print(f"Detecting boxes for {len(missing)} bundles...")
+        try:
+            detector = ClothingYOLODetector(
+                model_id=model_id,
+                conf_threshold=conf_threshold,
+                iou_threshold=iou_threshold,
+                max_boxes_per_image=max_boxes_per_image,
+                min_area_ratio=min_area_ratio,
+            )
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "params.use_bundle_boxes=true requiere ultralyticsplus. "
+                "Instala con: pip install ultralyticsplus"
+            ) from exc
+
+        detected = detect_boxes_for_assets(detector, missing, show_progress=True)
+        bundle_to_boxes.update(detected)
+        save_boxes_cache(resolved_cache, bundle_to_boxes)
+        print(f"Saved bbox cache: {resolved_cache}")
+    else:
+        print(f"Loaded bbox cache: {resolved_cache}")
+
+    return {bundle_id: bundle_to_boxes.get(bundle_id, []) for bundle_id in bundle_to_image}
+
+
 def open_image_safe(path: Path, retries: int = 1) -> Optional[Image.Image]:
     """Safely open an image with small retry count."""
     last_err: Optional[Exception] = None
@@ -216,8 +310,21 @@ def open_image_safe(path: Path, retries: int = 1) -> Optional[Image.Image]:
     return None
 
 
+def crop_with_box(image: Image.Image, box: BoxXYXY) -> Image.Image:
+    """Crop image with bounds-safe XYXY coordinates."""
+    x1, y1, x2, y2 = box
+    width, height = image.size
+    x1 = max(0, min(x1, width - 1))
+    y1 = max(0, min(y1, height - 1))
+    x2 = max(1, min(x2, width))
+    y2 = max(1, min(y2, height))
+    if x2 <= x1 or y2 <= y1:
+        return image
+    return image.crop((x1, y1, x2, y2))
+
+
 class BundlePositiveDataset(Dataset):
-    """One sample per bundle, choosing one positive product on the fly."""
+    """One training sample per detected bundle region (or full image fallback)."""
 
     def __init__(
         self,
@@ -228,6 +335,7 @@ class BundlePositiveDataset(Dataset):
         bundle_transform: Callable[[Image.Image], torch.Tensor],
         product_transform: Callable[[Image.Image], torch.Tensor],
         tokenizer: Any,
+        bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
     ) -> None:
         self.bundle_ids = sorted(bundle_to_products.keys())
         self.bundle_to_image = bundle_to_image
@@ -237,18 +345,29 @@ class BundlePositiveDataset(Dataset):
         self.bundle_transform = bundle_transform
         self.product_transform = product_transform
         self.tokenizer = tokenizer
+        self.bundle_to_boxes = bundle_to_boxes or {}
+        self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
+        for bundle_id in self.bundle_ids:
+            boxes = self.bundle_to_boxes.get(bundle_id, [])
+            if boxes:
+                self.samples.extend((bundle_id, box) for box in boxes)
+            else:
+                self.samples.append((bundle_id, None))
+        self.num_unique_bundles = len(self.bundle_ids)
 
     def __len__(self) -> int:
-        return len(self.bundle_ids)
+        return len(self.samples)
 
     def __getitem__(self, idx: int):
-        bundle_id = self.bundle_ids[idx]
+        bundle_id, crop_box = self.samples[idx]
         product_ids = self.bundle_to_products[bundle_id]
         product_id = random.choice(product_ids)
         bundle_img = open_image_safe(self.bundle_to_image[bundle_id])
         product_img = open_image_safe(self.product_to_image[product_id])
         if bundle_img is None or product_img is None:
             return None
+        if crop_box is not None:
+            bundle_img = crop_with_box(bundle_img, crop_box)
         out = {
             "bundle_id": bundle_id,
             "product_id": product_id,
@@ -260,6 +379,40 @@ class BundlePositiveDataset(Dataset):
             # Tokenizer returns a batch of 1, squeeze to [context_length]
             out["product_text"] = self.tokenizer(text).squeeze(0)
         return out
+
+
+class BundleRegionDataset(Dataset):
+    """Dataset yielding one crop per detected bundle box (or full-image fallback)."""
+
+    def __init__(
+        self,
+        bundle_ids: Sequence[str],
+        bundle_to_image: Dict[str, Path],
+        transform: Callable[[Image.Image], torch.Tensor],
+        bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
+    ) -> None:
+        self.bundle_to_image = bundle_to_image
+        self.transform = transform
+        self.bundle_to_boxes = bundle_to_boxes or {}
+        self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
+        for bundle_id in sorted(bundle_ids):
+            boxes = self.bundle_to_boxes.get(bundle_id, [])
+            if boxes:
+                self.samples.extend((bundle_id, box) for box in boxes)
+            else:
+                self.samples.append((bundle_id, None))
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        bundle_id, crop_box = self.samples[idx]
+        img = open_image_safe(self.bundle_to_image[bundle_id])
+        if img is None:
+            return None
+        if crop_box is not None:
+            img = crop_with_box(img, crop_box)
+        return {"id": bundle_id, "img": self.transform(img)}
 
 
 class AssetImageDataset(Dataset):
@@ -349,12 +502,57 @@ def encode_images(
     return all_ids, torch.cat(all_embs, dim=0)
 
 
+def encode_bundle_regions(
+    model: nn.Module,
+    bundle_to_image: Dict[str, Path],
+    bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]],
+    preprocess_val: Callable[[Image.Image], torch.Tensor],
+    device: torch.device,
+    amp: bool,
+    batch_size: int,
+    num_workers: int,
+) -> Tuple[List[str], torch.Tensor]:
+    """Encode all bundle boxes and aggregate to one embedding per bundle."""
+    bundle_ids = sorted(bundle_to_image.keys())
+    loader = DataLoader(
+        BundleRegionDataset(
+            bundle_ids=bundle_ids,
+            bundle_to_image=bundle_to_image,
+            transform=preprocess_val,
+            bundle_to_boxes=bundle_to_boxes,
+        ),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_skip_none,
+    )
+    region_ids, region_embs = encode_images(model, loader, device, amp)
+    if region_embs.numel() == 0:
+        return [], torch.empty((0, 0), dtype=torch.float32, device=device)
+
+    grouped: Dict[str, List[torch.Tensor]] = defaultdict(list)
+    for bundle_id, emb in zip(region_ids, region_embs):
+        grouped[bundle_id].append(emb)
+
+    aggregated_ids: List[str] = []
+    aggregated_embs: List[torch.Tensor] = []
+    for bundle_id in sorted(grouped.keys()):
+        stacked = torch.stack(grouped[bundle_id], dim=0)
+        mean_emb = F.normalize(stacked.mean(dim=0), p=2, dim=0)
+        aggregated_ids.append(bundle_id)
+        aggregated_embs.append(mean_emb)
+
+    return aggregated_ids, torch.stack(aggregated_embs, dim=0)
+
+
 def validate_retrieval(
     model: nn.Module,
     preprocess_val,
     device: torch.device,
     amp: bool,
     val_bundle_to_image: Dict[str, Path],
+    val_bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]],
     val_bundle_to_products: Dict[str, Set[str]],
     product_to_image: Dict[str, Path],
     product_to_text: Dict[str, str],
@@ -382,16 +580,16 @@ def validate_retrieval(
         raise RuntimeError("No product embeddings available for validation.")
     pid_to_index = {pid: idx for idx, pid in enumerate(encoded_product_ids)}
 
-    val_bundle_ids = sorted(val_bundle_to_products.keys())
-    bundle_loader = DataLoader(
-        AssetImageDataset(val_bundle_ids, val_bundle_to_image, preprocess_val),
+    encoded_bundle_ids, bundle_embs = encode_bundle_regions(
+        model=model,
+        bundle_to_image=val_bundle_to_image,
+        bundle_to_boxes=val_bundle_to_boxes,
+        preprocess_val=preprocess_val,
+        device=device,
+        amp=amp,
         batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=(device.type == "cuda"),
-        collate_fn=collate_skip_none,
     )
-    encoded_bundle_ids, bundle_embs = encode_images(model, bundle_loader, device, amp)
     if bundle_embs.numel() == 0:
         raise RuntimeError("No bundle embeddings available for validation.")
 
@@ -546,6 +744,28 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     val_bundle_to_image, val_bundle_to_products = parse_bundle_manifest(
         val_manifest, product_to_image, bundles_images_dir=bundles_images_dir
     )
+    train_bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None
+    val_bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None
+    if params.use_bundle_boxes:
+        all_bundle_to_image = {**train_bundle_to_image, **val_bundle_to_image}
+        all_bundle_to_boxes = detect_bundle_boxes_with_cache(
+            bundle_to_image=all_bundle_to_image,
+            output_dir=output_dir,
+            model_id=params.bbox_model_id,
+            conf_threshold=params.bbox_conf_threshold,
+            iou_threshold=params.bbox_iou_threshold,
+            max_boxes_per_image=params.bbox_max_per_image,
+            min_area_ratio=params.bbox_min_area_ratio,
+            cache_path=params.bbox_cache_path,
+        )
+        train_bundle_to_boxes = {
+            bundle_id: all_bundle_to_boxes.get(bundle_id, [])
+            for bundle_id in train_bundle_to_image
+        }
+        val_bundle_to_boxes = {
+            bundle_id: all_bundle_to_boxes.get(bundle_id, [])
+            for bundle_id in val_bundle_to_image
+        }
 
     train_dataset = BundlePositiveDataset(
         bundle_to_image=train_bundle_to_image,
@@ -555,6 +775,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         bundle_transform=preprocess_train,
         product_transform=preprocess_train,
         tokenizer=tokenizer,
+        bundle_to_boxes=train_bundle_to_boxes,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -575,8 +796,16 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     temperature = 0.07
 
     best_recall = -1.0
-
-    print(f"Train bundles: {len(train_dataset)} | Products indexed: {len(product_to_image)}")
+    train_boxes = sum(len(v) for v in (train_bundle_to_boxes or {}).values())
+    val_boxes = sum(len(v) for v in (val_bundle_to_boxes or {}).values())
+    print(
+        f"Train bundles: {train_dataset.num_unique_bundles} | "
+        f"Train samples (boxes): {len(train_dataset)} | Products indexed: {len(product_to_image)}"
+    )
+    print(
+        f"Use bundle boxes: {bool(params.use_bundle_boxes)} | "
+        f"Detected train boxes: {train_boxes} | Detected val boxes: {val_boxes}"
+    )
     print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2}")
 
     for epoch in range(1, params.epochs + 1):
@@ -644,6 +873,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             device=device,
             amp=params.amp,
             val_bundle_to_image=val_bundle_to_image,
+            val_bundle_to_boxes=val_bundle_to_boxes,
             val_bundle_to_products=val_bundle_to_products,
             product_to_image=product_to_image,
             product_to_text=product_to_text,

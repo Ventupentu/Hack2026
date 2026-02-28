@@ -23,6 +23,13 @@ class Params:
     save_every: int = 1
     max_val_k: int = 200
     recall_k: int = 15
+    use_bundle_boxes: bool = True
+    bbox_model_id: str = "kesimeg/yolov8n-clothing-detection"
+    bbox_conf_threshold: float = 0.25
+    bbox_iou_threshold: float = 0.45
+    bbox_max_per_image: int = 15
+    bbox_min_area_ratio: float = 0.001
+    bbox_cache_path: str = ""
 
 
 @dataclass
