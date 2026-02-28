@@ -36,26 +36,22 @@ class Params:
 
 @dataclass
 class Files:
-    """Paths used by training."""
+    """Paths used across scripts. Only paths that vary per environment are listed here.
+    Derived paths (specific CSVs, output filenames) are built in code from these roots."""
 
-    train_manifest: str = MISSING
-    val_manifest: str = MISSING
-    products_manifest: str = MISSING
+    data_dir: str = MISSING
     bundles_images: str = MISSING
     products_images: str = MISSING
-    output_dir: str = MISSING
-    bundles_dataset: str = MISSING
     yolo_detections_dir: str = MISSING
 
 
 @dataclass
-class Detection:
-    """Parameters exclusive to the detection pipeline."""
+class Infer:
+    """Parameters exclusive to the inference/evaluation pipeline."""
 
-    max_images: int = MISSING
-    model_id: str = MISSING
-    conf_threshold: float = MISSING
-    iou_threshold: float = MISSING
+    val_ratio: float = MISSING
+    eval_ks: str = MISSING
+    top_n_submit: int = MISSING
 
 
 @dataclass
@@ -64,4 +60,4 @@ class InditexConfig:
 
     params: Params = field(default_factory=Params)
     files: Files = field(default_factory=Files)
-    detection: Detection = field(default_factory=Detection)
+    infer: Infer = field(default_factory=Infer)

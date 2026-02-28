@@ -4,8 +4,8 @@ defaults:
   - files: file.yaml
 
 params:
-  batch_size: 32
-  epochs: 5
+  batch_size: 64
+  epochs: 20
   lr: 1e-5
   weight_decay: 1e-4
   seed: 42
@@ -28,8 +28,7 @@ params:
   bbox_min_area_ratio: 0.001
   bbox_cache_path: ""
 
-detection:
-  max_images: 40000
-  model_id: kesimeg/yolov8n-clothing-detection
-  conf_threshold: 0.25
-  iou_threshold: 0.45
+infer:
+  val_ratio: 0.2
+  eval_ks: "1,5,10,15"
+  top_n_submit: 15
