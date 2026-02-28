@@ -1,0 +1,59 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{cite}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Bundle-to-Product Retrieval in Fashion},
+  pdfauthor={Hack2026 Team}
+}
+
+\title{Bundle-to-Product Retrieval in Fashion:\\Technical Paper and System Documentation}
+\author{
+\IEEEauthorblockN{Hack2026 Team}
+\IEEEauthorblockA{Internal Technical Report}
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the full Hack2026 retrieval system for fashion bundle decomposition, where each bundle image must be matched to one or more product identifiers. The implementation combines a baseline pretrained visual retrieval pipeline and an advanced OpenCLIP training pipeline with optional clothing-region detection. We detail data preprocessing, offline augmentation, model training, local validation, inference, and submission generation. The paper is grounded on the repository codebase, with an emphasis on reproducibility and engineering decisions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+visual retrieval, multimodal learning, OpenCLIP, fashion AI, metric learning, object-level matching
+\end{IEEEkeywords}
+
+\input{sections/01_introduction}
+\input{sections/02_data}
+\input{sections/03_method}
+\input{sections/04_implementation}
+\input{sections/05_experiments}
+\input{sections/06_reproducibility}
+\input{sections/07_limitations}
+\input{sections/08_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\appendix
+\input{sections/A_appendix_commands}
+
+\end{document}
