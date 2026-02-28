@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -109,6 +109,9 @@ for _cat, _descs in CATEGORY_GROUPS.items():
 # Helpers (reused from retrieval_openclip)
 # ---------------------------------------------------------------------------
 
+_GENDER_UNKNOWN = 0  # section id for unknown / unisex
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -151,6 +154,102 @@ def build_image_map(image_dir: Path) -> Dict[str, Path]:
 
 def parse_ks(text: str) -> List[int]:
     return sorted({int(t.strip()) for t in text.split(",") if t.strip()})
+
+
+# ---------------------------------------------------------------------------
+# Gender & category helpers
+# ---------------------------------------------------------------------------
+
+def load_bundle_genders(bundles_df: pd.DataFrame) -> Dict[str, int]:
+    """Return bundle_id -> section (int) from bundles dataframe."""
+    out: Dict[str, int] = {}
+    for row in bundles_df.itertuples(index=False):
+        bid = str(row.bundle_asset_id)
+        section = row.bundle_id_section
+        if not pd.isna(section):
+            out[bid] = int(section)
+    return out
+
+
+def load_product_genders(products_gender_csv: Path) -> Dict[str, int]:
+    """Return product_id -> gender (int) from product_dataset_with_gender.csv."""
+    if not products_gender_csv.exists():
+        return {}
+    df = pd.read_csv(products_gender_csv)
+    if "gender" not in df.columns:
+        return {}
+    out: Dict[str, int] = {}
+    for row in df.itertuples(index=False):
+        pid = str(row.product_asset_id)
+        gender = row.gender
+        out[pid] = int(gender) if not pd.isna(gender) else _GENDER_UNKNOWN
+    return out
+
+
+def load_product_categories(products_csv: Path) -> Dict[str, str]:
+    """Return product_id -> product_description (uppercase) from product CSV."""
+    df = pd.read_csv(products_csv)
+    out: Dict[str, str] = {}
+    for row in df.itertuples(index=False):
+        pid = str(row.product_asset_id)
+        desc = str(row.product_description) if not pd.isna(row.product_description) else ""
+        out[pid] = desc.strip().upper()
+    return out
+
+
+def filter_cross_gender(
+    scored_products: List[Tuple[str, float]],
+    bundle_gender: int,
+    product_to_gender: Dict[str, int],
+) -> List[Tuple[str, float]]:
+    """Remove products whose *known* gender differs from the bundle's known gender.
+
+    - If the bundle gender is unknown (0) → no filtering.
+    - Products with unknown gender (0) → always kept.
+    - Products with same gender → kept.
+    - Products with different known gender → dropped.
+    """
+    if bundle_gender == _GENDER_UNKNOWN:
+        return scored_products
+    return [
+        (pid, score)
+        for pid, score in scored_products
+        if product_to_gender.get(pid, _GENDER_UNKNOWN) in (_GENDER_UNKNOWN, bundle_gender)
+    ]
+
+
+def deduplicate_by_category(
+    scored_products: List[Tuple[str, float]],
+    product_to_category: Dict[str, str],
+    max_per_category: int,
+) -> List[Tuple[str, float]]:
+    """Keep at most ``max_per_category`` products per product_description.
+
+    Input must be sorted by score descending.  Products with empty/unknown
+    category are always kept (no limit).
+    """
+    if max_per_category <= 0:
+        return scored_products
+    category_counts: Dict[str, int] = defaultdict(int)
+    result: List[Tuple[str, float]] = []
+    for pid, score in scored_products:
+        cat = product_to_category.get(pid, "")
+        if cat and category_counts[cat] >= max_per_category:
+            continue
+        if cat:
+            category_counts[cat] += 1
+        result.append((pid, score))
+    return result
+
+
+def apply_score_threshold(
+    scored_products: List[Tuple[str, float]],
+    threshold: float,
+) -> List[Tuple[str, float]]:
+    """Drop products below a cosine similarity threshold."""
+    if threshold <= 0.0:
+        return scored_products
+    return [(pid, score) for pid, score in scored_products if score >= threshold]
 
 
 # ---------------------------------------------------------------------------
@@ -545,11 +644,8 @@ def build_crop_items(
 
 
 # ---------------------------------------------------------------------------
-# Per-crop retrieval + category boosting
+# Per-crop retrieval + post-processing
 # ---------------------------------------------------------------------------
-
-def _product_category(desc: str) -> str:
-    return _DESC_TO_CATEGORY.get(desc.upper().strip(), "other")
 
 
 def retrieve_per_crop(
@@ -558,9 +654,20 @@ def retrieve_per_crop(
     product_categories: Dict[str, str],
     top_k_per_crop: int,
     top_n_submit: int,
-    category_boost: float = 0.0,
+    bundle_to_gender: Optional[Dict[str, int]] = None,
+    product_to_gender: Optional[Dict[str, int]] = None,
+    gender_filter: bool = True,
+    max_per_category: int = 2,
+    score_threshold: float = 0.0,
 ) -> Dict[str, List[str]]:
-    """Per-crop retrieval with score merging and optional category boosting."""
+    """Per-crop retrieval with score merging + hard post-processing pipeline.
+
+    Pipeline per bundle (all steps on scored list, sorted desc):
+      1. Score threshold  — drop low-confidence results
+      2. Gender filter    — discard known cross-gender products
+      3. Category dedup   — max N products per product_description
+      4. Top-K            — take final top_n_submit (may return fewer)
+    """
     results: Dict[str, List[str]] = {}
 
     for bundle_id, crops in tqdm(bundle_crops.items(), desc="Per-crop retrieval", leave=False):
@@ -576,22 +683,25 @@ def retrieve_per_crop(
                 # SUM aggregation: products matching multiple crops score higher
                 candidates[pid] = candidates.get(pid, 0.0) + combined
 
-        # Optional category diversity boost: mildly boost underrepresented categories
-        if category_boost > 0 and product_categories:
-            category_seen: Dict[str, int] = Counter()
-            sorted_cands = sorted(candidates.items(), key=lambda x: -x[1])
-            boosted: Dict[str, float] = {}
-            for pid, score in sorted_cands:
-                cat = product_categories.get(pid, "other")
-                count = category_seen[cat]
-                # Penalize repeated categories slightly
-                penalty = 1.0 - category_boost * min(count, 3) * 0.1
-                boosted[pid] = score * max(penalty, 0.5)
-                category_seen[cat] += 1
-            candidates = boosted
+        # Sort by score descending — base ranking for post-processing
+        ranked: List[Tuple[str, float]] = sorted(
+            candidates.items(), key=lambda x: x[1], reverse=True
+        )
 
-        sorted_final = sorted(candidates.items(), key=lambda x: -x[1])
-        results[bundle_id] = [pid for pid, _ in sorted_final[:top_n_submit]]
+        # 1) Score threshold: drop low-confidence results
+        ranked = apply_score_threshold(ranked, score_threshold)
+
+        # 2) Gender filter: discard products with a different *known* gender
+        if gender_filter and bundle_to_gender and product_to_gender:
+            bundle_gender = bundle_to_gender.get(bundle_id, _GENDER_UNKNOWN)
+            ranked = filter_cross_gender(ranked, bundle_gender, product_to_gender)
+
+        # 3) Category diversity: max N products per description category
+        if max_per_category > 0 and product_categories:
+            ranked = deduplicate_by_category(ranked, product_categories, max_per_category)
+
+        # Take top final (may be < top_n_submit — that's OK)
+        results[bundle_id] = [pid for pid, _ in ranked[:top_n_submit]]
 
     return results
 
@@ -623,13 +733,14 @@ def validate(
 @hydra.main(version_base=None, config_path="../config", config_name="config")
 def main(cfg: InditexConfig) -> None:
     # ---- Paths ----
-    products_csv = Path(to_absolute_path(cfg.files.products_manifest))
-    train_csv = Path(to_absolute_path(cfg.files.train_manifest))
-    # Derive test csv from train csv path
-    test_csv = train_csv.parent / train_csv.name.replace("train", "test")
+    data_dir = Path(to_absolute_path(cfg.files.data_dir))
+    bundles_csv = data_dir / "bundles_dataset.csv"
+    products_csv = data_dir / "product_dataset.csv"
+    train_csv = data_dir / "bundles_product_match_train.csv"
+    test_csv = data_dir / "bundles_product_match_test.csv"
     bundle_images_dir = Path(to_absolute_path(cfg.files.bundles_images))
     product_images_dir = Path(to_absolute_path(cfg.files.products_images))
-    output_dir = Path(to_absolute_path(cfg.files.output_dir))
+    output_dir = Path(to_absolute_path("outputs"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Params ----
@@ -645,16 +756,22 @@ def main(cfg: InditexConfig) -> None:
     n_tta = cfg.infer.tta_num_augs
     per_crop_topk = cfg.infer.per_crop_topk
 
+    # Post-processing params from config
+    gender_filter = bool(getattr(cfg.infer, "gender_filter", True))
+    max_per_category = int(getattr(cfg.infer, "max_per_category", 2))
+    score_threshold = float(getattr(cfg.infer, "score_threshold", 0.0))
+
     set_seed(seed)
 
     # ---- Load model ----
     print("=" * 60)
-    print("INFER v8 — Per-crop retrieval + TTA + Category filtering")
+    print("INFER v8 — Per-crop retrieval + TTA + Post-processing")
     print("=" * 60)
     model, preprocess, tokenizer = load_openclip_model(checkpoint_path, device)
     print(f"Device: {device} | AMP: {amp} | TTA: {n_tta} | TopK/crop: {per_crop_topk}")
 
     # ---- Load data ----
+    bundles_df = pd.read_csv(bundles_csv)
     products_df = pd.read_csv(products_csv)
     train_df = pd.read_csv(train_csv)
     test_df = pd.read_csv(test_csv)
@@ -668,8 +785,20 @@ def main(cfg: InditexConfig) -> None:
         products_df["product_asset_id"].astype(str),
         products_df["product_description"].fillna("").astype(str),
     ))
-    product_categories = {pid: _product_category(product_to_text.get(pid, "")) for pid in product_ids}
+    # Build raw description category map for dedup (uppercase description)
+    product_to_category = load_product_categories(products_csv)
     print(f"Products: {len(product_ids)} with images / {len(all_product_ids)} total")
+
+    # ---- Load gender maps ----
+    bundle_to_gender = load_bundle_genders(bundles_df)
+    products_gender_csv = data_dir / "product_dataset_with_gender.csv"
+    product_to_gender = load_product_genders(products_gender_csv)
+
+    if gender_filter and bundle_to_gender and product_to_gender:
+        print(f"Gender filter enabled: {len(bundle_to_gender)} bundles, {len(product_to_gender)} products")
+    else:
+        print("Gender filter disabled.")
+    print(f"Category dedup: max_per_category={max_per_category} | Score threshold: {score_threshold}")
 
     # ---- Encode products (with TTA) ----
     print(f"\n[1/4] Encoding products (TTA={n_tta})...")
@@ -683,8 +812,6 @@ def main(cfg: InditexConfig) -> None:
     # ---- Build search index ----
     print("\n[2/4] Building search index...")
     search_index = ProductIndex(encoded_pids, product_embeddings)
-    # Update categories to only include encoded products
-    product_categories = {pid: product_categories.get(pid, "other") for pid in encoded_pids}
 
     # ---- Validation ----
     if val_ratio > 0:
@@ -708,8 +835,13 @@ def main(cfg: InditexConfig) -> None:
             val_crop_items, model, preprocess, device, batch_size, num_workers, amp,
         )
         val_predictions = retrieve_per_crop(
-            val_crop_embs, search_index, product_categories,
-            per_crop_topk, top_n_submit, category_boost=0.05,
+            val_crop_embs, search_index, product_to_category,
+            per_crop_topk, top_n_submit,
+            bundle_to_gender=bundle_to_gender,
+            product_to_gender=product_to_gender,
+            gender_filter=gender_filter,
+            max_per_category=max_per_category,
+            score_threshold=score_threshold,
         )
 
         val_metrics = validate(val_bundle_ids, val_predictions, gt_map, eval_ks)
@@ -740,20 +872,18 @@ def main(cfg: InditexConfig) -> None:
         test_crop_items, model, preprocess, device, batch_size, num_workers, amp,
     )
     test_predictions = retrieve_per_crop(
-        test_crop_embs, search_index, product_categories,
-        per_crop_topk, top_n_submit, category_boost=0.05,
+        test_crop_embs, search_index, product_to_category,
+        per_crop_topk, top_n_submit,
+        bundle_to_gender=bundle_to_gender,
+        product_to_gender=product_to_gender,
+        gender_filter=gender_filter,
+        max_per_category=max_per_category,
+        score_threshold=score_threshold,
     )
-
-    # Fallback for bundles with no predictions
-    popular = [pid for pid, _ in Counter(
-        train_df["product_asset_id"].astype(str).tolist()
-    ).most_common(top_n_submit)]
 
     submission_rows: List[Dict[str, str]] = []
     for bid in test_bundle_ids:
-        preds = test_predictions.get(bid, popular)[:top_n_submit]
-        if not preds:
-            preds = popular[:top_n_submit]
+        preds = test_predictions.get(bid, [])[:top_n_submit]
         for pid in preds:
             submission_rows.append({"bundle_asset_id": bid, "product_asset_id": pid})
 

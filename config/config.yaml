@@ -4,9 +4,9 @@ defaults:
   - files: file.yaml
 
 params:
-  batch_size: 32
-  epochs: 40
-  lr: 2e-5
+  batch_size: 64
+  epochs: 15
+  lr: 3e-5
   weight_decay: 1e-4
   seed: 42
   num_workers: 4
@@ -40,3 +40,9 @@ infer:
   top_n_submit: 15
   val_ratio: 0.1
   eval_ks: "5,10,15"
+  # Gender filtering: discard products whose known gender ≠ bundle section
+  gender_filter: true
+  # Category diversity: max products per product_description (0 = unlimited)
+  max_per_category: 2
+  # Score threshold: drop results below this cosine similarity (0.0 = keep all)
+  score_threshold: 0.3
