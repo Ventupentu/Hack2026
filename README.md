@@ -122,6 +122,28 @@ Also, each `product_asset_id` has only one image, so the pipeline must be robust
 python preprocess_data.py --skip_download --out_dir data/preprocessed --val_ratio 0.1 --seed 42
 ```
 
+### Offline Data Augmentation (Saved to Disk)
+
+Use `offline_augment.py` to generate additional views while preserving IDs (`bundle_asset_id` / `product_asset_id`):
+
+```bash
+python offline_augment.py \
+  --bundles_manifest data/manifests/train_manifest.jsonl \
+  --products_manifest data/product_dataset.csv \
+  --out_dir data/offline_aug \
+  --bundles_num_augs 4 \
+  --products_num_augs 2 \
+  --img_size 224 \
+  --seed 42 \
+  --workers 8
+```
+
+Outputs:
+- `data/offline_aug/bundles_aug/*.jpg`
+- `data/offline_aug/products_aug/*.jpg`
+- `data/offline_aug/bundles_aug_manifest.jsonl`
+- `data/offline_aug/products_aug_manifest.jsonl`
+
 ### 3) Bundle Item Detection
 - Detect item regions/crops from each bundle image.
 - Keep a fallback full-image crop for robustness when detection misses small items.
