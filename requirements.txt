@@ -6,3 +6,5 @@ requests
 hydra-core
 torch
 torchvision
+flask
+open-clip-torch
