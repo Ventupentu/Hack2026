@@ -21,10 +21,13 @@ class Params:
     gpu_ids: str = "0,1"
     amp: bool = True
     grad_accum: int = 1
+    grad_checkpointing: bool = False
     log_every: int = 50
     save_every: int = 1
     max_val_k: int = 200
     recall_k: int = 15
+    use_soft_targets: bool = True
+    learnable_temperature: bool = True
     use_bundle_boxes: bool = True
     bbox_model_id: str = "kesimeg/yolov8n-clothing-detection"
     bbox_conf_threshold: float = 0.25
@@ -37,6 +40,8 @@ class Params:
     hard_neg_top_k: int = 16
     max_hard_negatives: int = 4
     max_positives: int = 8
+    hard_neg_margin: float = 0.2
+    hard_neg_weight: float = 0.25
 
 
 @dataclass
