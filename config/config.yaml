@@ -1,13 +1,19 @@
-#Base Settings
+# Base settings for retrieval training (Hydra)
 defaults:
   - _self_
   - files: file.yaml
 
 params:
-  model: model/our_model.yaml
-  img_size: 640
-  epochs: 300
-  batch_size: 16
-  lr: 0.01
-  weight_decay: 0.0005
-  optimizer: AdamW
+  batch_size: 32
+  epochs: 5
+  lr: 1e-5
+  weight_decay: 1e-4
+  seed: 42
+  num_workers: 4
+  device: cuda
+  amp: true
+  grad_accum: 1
+  log_every: 50
+  save_every: 1
+  max_val_k: 200
+  recall_k: 15

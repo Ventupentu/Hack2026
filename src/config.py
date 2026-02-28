@@ -1,28 +1,40 @@
-from dataclasses import dataclass
+"""Typed Hydra config for retrieval training."""
+
+from dataclasses import dataclass, field
+
 
 @dataclass
 class Params:
-    # Parameters for the training model process
-    model: str
-    img_size: int
-    epochs: int
-    batch_size: int
-    lr: float
-    weight_decay: float
-    optimizer: str
+    """Training/model parameters."""
+
+    batch_size: int = 32
+    epochs: int = 5
+    lr: float = 1e-5
+    weight_decay: float = 1e-4
+    seed: int = 42
+    num_workers: int = 4
+    device: str = "cuda"
+    amp: bool = True
+    grad_accum: int = 1
+    log_every: int = 50
+    save_every: int = 1
+    max_val_k: int = 200
+    recall_k: int = 15
+
 
 @dataclass
 class Files:
-    # File paths for the training process
-    bundles_dataset: str
-    bundles_product_match_train: str
-    bundles_product_match_test: str
-    product_dataset: str
-    bundles_images: str
-    products_images: str
+    """Paths used by training."""
+
+    train_manifest: str = "data/bundles_product_match_train.csv"
+    val_manifest: str = "data/bundles_product_match_train.csv"
+    products_manifest: str = "data/product_dataset.csv"
+    output_dir: str = "outputs/retrieval_openclip"
+
 
 @dataclass
 class InditexConfig:
-    # Configuration for the project
-    params: Params
-    files: Files
+    """Root config."""
+
+    params: Params = field(default_factory=Params)
+    files: Files = field(default_factory=Files)
