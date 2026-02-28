@@ -6,6 +6,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tqdm import tqdm
 
+import torch
+import functools
+
+# PyTorch 2.6 changed torch.load default to weights_only=True,
+# which breaks ultralytics YOLO model loading. Patch it back.
+_orig_torch_load = torch.load
+@functools.wraps(_orig_torch_load)
+def _patched_load(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _orig_torch_load(*args, **kwargs)
+torch.load = _patched_load  # type: ignore[assignment]
+
 try:
     from ultralyticsplus import YOLO, render_result
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
