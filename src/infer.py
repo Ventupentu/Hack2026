@@ -141,7 +141,99 @@ def find_local_grlite_pt(path: Path) -> Optional[Path]:
     return None
 
 
-def load_grlite_base_model(model_name: str, device: torch.device) -> torch.nn.Module:
+def _strip_state_dict_prefix(state_dict: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tensor]:
+    if not prefix:
+        return state_dict
+    if all(key.startswith(prefix) for key in state_dict.keys()):
+        plen = len(prefix)
+        return {key[plen:]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def _as_tensor_state_dict(payload: Any) -> Optional[Dict[str, torch.Tensor]]:
+    if isinstance(payload, dict) and payload and all(isinstance(v, torch.Tensor) for v in payload.values()):
+        return dict(payload)
+    return None
+
+
+def normalize_grlite_state_dict_keys(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Normalize common GR-Lite checkpoint key prefixes to model-native keys."""
+    sd = strip_module_prefix(dict(state_dict))
+    sd = _strip_state_dict_prefix(sd, "base_model.")
+    sd = _strip_state_dict_prefix(sd, "model.model.")
+    sd = _strip_state_dict_prefix(sd, "model.")
+
+    converted: Dict[str, torch.Tensor] = {}
+    for key, value in sd.items():
+        new_key = key
+        if new_key.startswith("layer."):
+            new_key = "layers." + new_key[len("layer."):]
+        elif new_key.startswith("norm."):
+            new_key = "layernorm." + new_key[len("norm."):]
+        converted[new_key] = value
+    return converted
+
+
+def build_eomt_model_from_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    device: torch.device,
+    input_size: int,
+) -> torch.nn.Module:
+    """Build EOMT-DINOv3 model and load a GR-Lite-like state_dict into it."""
+    from transformers import EomtDinov3Config, EomtDinov3ForUniversalSegmentation
+
+    converted = normalize_grlite_state_dict_keys(state_dict)
+
+    if "embeddings.cls_token" not in converted:
+        raise RuntimeError(
+            "Could not identify GR-Lite backbone keys in tensor checkpoint "
+            "(missing embeddings.cls_token after prefix conversion)."
+        )
+
+    hidden_size = int(converted["embeddings.cls_token"].shape[-1])
+    patch_size = int(converted["embeddings.patch_embeddings.weight"].shape[-1])
+    num_channels = int(converted["embeddings.patch_embeddings.weight"].shape[1])
+    num_register_tokens = int(converted.get("embeddings.register_tokens", torch.zeros(1, 0, hidden_size)).shape[1])
+    layer_ids = sorted(
+        {
+            int(key.split(".")[1])
+            for key in converted.keys()
+            if key.startswith("layers.") and len(key.split(".")) >= 3 and key.split(".")[1].isdigit()
+        }
+    )
+    if not layer_ids:
+        raise RuntimeError("Could not infer number of layers from state_dict keys.")
+    num_hidden_layers = int(max(layer_ids) + 1)
+    up_proj_key = next((k for k in converted.keys() if k.endswith("mlp.up_proj.weight")), None)
+    if up_proj_key is None:
+        raise RuntimeError("Could not infer intermediate_size (missing mlp.up_proj.weight).")
+    intermediate_size = int(converted[up_proj_key].shape[0])
+    num_attention_heads = int(hidden_size // 64) if hidden_size % 64 == 0 else 16
+    if hidden_size % num_attention_heads != 0:
+        divisors = [d for d in range(32, 7, -1) if hidden_size % d == 0]
+        num_attention_heads = divisors[0] if divisors else 8
+
+    cfg = EomtDinov3Config(
+        hidden_size=hidden_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        intermediate_size=intermediate_size,
+        num_register_tokens=num_register_tokens,
+        patch_size=patch_size,
+        num_channels=num_channels,
+        image_size=input_size,
+    )
+    model = EomtDinov3ForUniversalSegmentation(cfg)
+    missing, unexpected = model.load_state_dict(converted, strict=False)
+    print(
+        "Loaded tensor checkpoint into EOMT-DINOv3 | "
+        f"missing={len(missing)} unexpected={len(unexpected)} "
+        f"layers={num_hidden_layers} hidden={hidden_size} heads={num_attention_heads}"
+    )
+    return model.to(device).eval()
+
+
+def load_grlite_base_model(model_name: str, device: torch.device, input_size: int) -> torch.nn.Module:
     """Load GR-Lite from transformers repo or serialized .pt fallback."""
     try:
         from transformers import AutoConfig, AutoModel
@@ -167,8 +259,23 @@ def load_grlite_base_model(model_name: str, device: torch.device) -> torch.nn.Mo
     loaded = torch_load_any(model_path, map_location=device)
     if isinstance(loaded, torch.nn.Module):
         return loaded.to(device).eval()
-    if isinstance(loaded, dict) and "model" in loaded and isinstance(loaded["model"], torch.nn.Module):
-        return loaded["model"].to(device).eval()
+    if isinstance(loaded, dict) and "model" in loaded:
+        if isinstance(loaded["model"], torch.nn.Module):
+            return loaded["model"].to(device).eval()
+        state_dict = _as_tensor_state_dict(loaded["model"])
+        if state_dict is not None:
+            return build_eomt_model_from_state_dict(
+                state_dict=state_dict,
+                device=device,
+                input_size=input_size,
+            )
+    state_dict = _as_tensor_state_dict(loaded)
+    if state_dict is not None:
+        return build_eomt_model_from_state_dict(
+            state_dict=state_dict,
+            device=device,
+            input_size=input_size,
+        )
     raise RuntimeError(
         f"Unsupported serialized GR-Lite payload type: {type(loaded)} at {model_path}. "
         "Expected torch.nn.Module or dict with key 'model'."
@@ -518,7 +625,7 @@ def load_encoder(
     input_size = int(getattr(infer_cfg, "grlite_input_size", 518))
 
     print(f"Loading GR-Lite encoder from: {model_ref}")
-    base_model = load_grlite_base_model(model_name=model_ref, device=device)
+    base_model = load_grlite_base_model(model_name=model_ref, device=device, input_size=input_size)
 
     if checkpoint_path:
         ckpt = Path(to_absolute_path(checkpoint_path))
@@ -528,7 +635,7 @@ def load_encoder(
         state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
         if not isinstance(state_dict, dict):
             raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
-        state_dict = strip_module_prefix(state_dict)
+        state_dict = normalize_grlite_state_dict_keys(state_dict)
         missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
         print(f"Loaded GR-Lite checkpoint: {ckpt}")
         print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")

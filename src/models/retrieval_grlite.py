@@ -79,7 +79,116 @@ def find_local_grlite_pt(path: Path) -> Optional[Path]:
     return None
 
 
-def load_grlite_base_model(model_name: str, device: torch.device) -> nn.Module:
+def strip_module_prefix(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Drop DataParallel 'module.' prefix when present."""
+    if not state_dict:
+        return state_dict
+    if all(key.startswith("module.") for key in state_dict.keys()):
+        return {key.replace("module.", "", 1): value for key, value in state_dict.items()}
+    return state_dict
+
+
+def _strip_state_dict_prefix(state_dict: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tensor]:
+    if not prefix:
+        return state_dict
+    if all(key.startswith(prefix) for key in state_dict.keys()):
+        plen = len(prefix)
+        return {key[plen:]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def _as_tensor_state_dict(payload: Any) -> Optional[Dict[str, torch.Tensor]]:
+    """Return payload as plain tensor state_dict when possible."""
+    if isinstance(payload, dict) and payload and all(isinstance(v, torch.Tensor) for v in payload.values()):
+        return dict(payload)
+    return None
+
+
+def build_eomt_model_from_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    device: torch.device,
+    input_size: int,
+) -> nn.Module:
+    """Build EOMT-DINOv3 model and load a GR-Lite-like state_dict into it."""
+    try:
+        from transformers import EomtDinov3Config, EomtDinov3ForUniversalSegmentation
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "transformers (with EomtDinov3 classes) is required to load GR-Lite tensor checkpoints."
+        ) from exc
+
+    sd = strip_module_prefix(dict(state_dict))
+    # Known wrappers seen across checkpoints.
+    sd = _strip_state_dict_prefix(sd, "base_model.")
+    sd = _strip_state_dict_prefix(sd, "model.model.")
+    sd = _strip_state_dict_prefix(sd, "model.")
+
+    # Convert key names to EOMT naming.
+    converted: Dict[str, torch.Tensor] = {}
+    for key, value in sd.items():
+        new_key = key
+        if new_key.startswith("layer."):
+            new_key = "layers." + new_key[len("layer."):]
+        elif new_key.startswith("norm."):
+            new_key = "layernorm." + new_key[len("norm."):]
+        converted[new_key] = value
+
+    if "embeddings.cls_token" not in converted:
+        raise RuntimeError(
+            "Could not identify GR-Lite backbone keys in tensor checkpoint "
+            "(missing embeddings.cls_token after prefix conversion)."
+        )
+
+    hidden_size = int(converted["embeddings.cls_token"].shape[-1])
+    patch_size = int(converted["embeddings.patch_embeddings.weight"].shape[-1])
+    num_channels = int(converted["embeddings.patch_embeddings.weight"].shape[1])
+    num_register_tokens = int(converted.get("embeddings.register_tokens", torch.zeros(1, 0, hidden_size)).shape[1])
+
+    layer_ids = sorted(
+        {
+            int(key.split(".")[1])
+            for key in converted.keys()
+            if key.startswith("layers.") and len(key.split(".")) >= 3 and key.split(".")[1].isdigit()
+        }
+    )
+    if not layer_ids:
+        raise RuntimeError("Could not infer number of layers from state_dict keys.")
+    num_hidden_layers = int(max(layer_ids) + 1)
+
+    up_proj_key = next((k for k in converted.keys() if k.endswith("mlp.up_proj.weight")), None)
+    if up_proj_key is None:
+        raise RuntimeError("Could not infer intermediate_size (missing mlp.up_proj.weight).")
+    intermediate_size = int(converted[up_proj_key].shape[0])
+
+    # DINOv3-L style defaults (64 dim/head) when possible.
+    num_attention_heads = int(hidden_size // 64) if hidden_size % 64 == 0 else 16
+    if hidden_size % num_attention_heads != 0:
+        # Fallback to any divisor >= 8 to avoid invalid config.
+        divisors = [d for d in range(32, 7, -1) if hidden_size % d == 0]
+        num_attention_heads = divisors[0] if divisors else 8
+
+    cfg = EomtDinov3Config(
+        hidden_size=hidden_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        intermediate_size=intermediate_size,
+        num_register_tokens=num_register_tokens,
+        patch_size=patch_size,
+        num_channels=num_channels,
+        image_size=input_size,
+    )
+
+    model = EomtDinov3ForUniversalSegmentation(cfg)
+    missing, unexpected = model.load_state_dict(converted, strict=False)
+    print(
+        "Loaded tensor checkpoint into EOMT-DINOv3 | "
+        f"missing={len(missing)} unexpected={len(unexpected)} "
+        f"layers={num_hidden_layers} hidden={hidden_size} heads={num_attention_heads}"
+    )
+    return model.to(device)
+
+
+def load_grlite_base_model(model_name: str, device: torch.device, input_size: int) -> nn.Module:
     """Load GR-Lite from transformers repo or serialized .pt fallback."""
     # First attempt: transformers-style repo (config + weights)
     try:
@@ -112,8 +221,23 @@ def load_grlite_base_model(model_name: str, device: torch.device) -> nn.Module:
     loaded = torch_load_any(model_path, map_location=device)
     if isinstance(loaded, nn.Module):
         return loaded.to(device)
-    if isinstance(loaded, dict) and "model" in loaded and isinstance(loaded["model"], nn.Module):
-        return loaded["model"].to(device)
+    if isinstance(loaded, dict) and "model" in loaded:
+        if isinstance(loaded["model"], nn.Module):
+            return loaded["model"].to(device)
+        state_dict = _as_tensor_state_dict(loaded["model"])
+        if state_dict is not None:
+            return build_eomt_model_from_state_dict(
+                state_dict=state_dict,
+                device=device,
+                input_size=input_size,
+            )
+    state_dict = _as_tensor_state_dict(loaded)
+    if state_dict is not None:
+        return build_eomt_model_from_state_dict(
+            state_dict=state_dict,
+            device=device,
+            input_size=input_size,
+        )
     raise RuntimeError(
         f"Unsupported serialized GR-Lite payload type: {type(loaded)} at {model_path}. "
         "Expected torch.nn.Module or dict with key 'model'."
@@ -466,7 +590,7 @@ def train_grlite_retrieval(
         raise ValueError("params.grlite_temperature must be > 0")
 
     print(f"Loading GR-Lite model from: {model_name}")
-    base_model = load_grlite_base_model(model_name=model_name, device=device)
+    base_model = load_grlite_base_model(model_name=model_name, device=device, input_size=input_size)
     model: nn.Module = GRLiteTensorEncoder(base_model).to(device)
     used_gpu_ids: List[int] = []
     if device.type == "cuda" and params.multi_gpu and torch.cuda.device_count() > 1:
