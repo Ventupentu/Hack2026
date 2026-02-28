@@ -8,7 +8,7 @@ import random
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import torch
@@ -56,6 +56,68 @@ def parse_gpu_ids(text: str) -> List[int]:
             continue
         ids.append(int(token))
     return ids
+
+
+def torch_load_any(path: Path, map_location: Any) -> Any:
+    """Load torch object across torch versions (weights_only arg compatibility)."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def find_local_grlite_pt(path: Path) -> Optional[Path]:
+    """Resolve local GR-Lite serialized model path."""
+    if path.is_file():
+        return path
+    if not path.is_dir():
+        return None
+    for candidate in ("gr_lite.pt", "gr-lite.pt", "model.pt", "best.pt", "last.pt"):
+        resolved = path / candidate
+        if resolved.exists() and resolved.is_file():
+            return resolved
+    return None
+
+
+def load_grlite_base_model(model_name: str, device: torch.device) -> nn.Module:
+    """Load GR-Lite from transformers repo or serialized .pt fallback."""
+    # First attempt: transformers-style repo (config + weights)
+    try:
+        from transformers import AutoConfig, AutoModel
+
+        model_cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        if hasattr(model_cfg, "is_crop"):
+            model_cfg.is_crop = False
+        model = AutoModel.from_pretrained(model_name, config=model_cfg, trust_remote_code=True)
+        return model.to(device)
+    except Exception as exc:
+        print(f"Transformers loader failed for '{model_name}', trying serialized .pt fallback ({exc})")
+
+    # Fallback: serialized model file (as documented in srpone/gr-lite card)
+    local_ref = find_local_grlite_pt(Path(model_name).expanduser())
+    model_path: Path
+    if local_ref is not None:
+        model_path = local_ref.resolve()
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ModuleNotFoundError as hub_exc:
+            raise ModuleNotFoundError(
+                "Failed to load GR-Lite via transformers and huggingface_hub is missing. "
+                "Install with: pip install huggingface_hub"
+            ) from hub_exc
+        downloaded = hf_hub_download(repo_id=model_name, filename="gr_lite.pt")
+        model_path = Path(downloaded).resolve()
+
+    loaded = torch_load_any(model_path, map_location=device)
+    if isinstance(loaded, nn.Module):
+        return loaded.to(device)
+    if isinstance(loaded, dict) and "model" in loaded and isinstance(loaded["model"], nn.Module):
+        return loaded["model"].to(device)
+    raise RuntimeError(
+        f"Unsupported serialized GR-Lite payload type: {type(loaded)} at {model_path}. "
+        "Expected torch.nn.Module or dict with key 'model'."
+    )
 
 
 def _as_str(value: Any) -> str:
@@ -403,19 +465,8 @@ def train_grlite_retrieval(
     if temperature <= 0:
         raise ValueError("params.grlite_temperature must be > 0")
 
-    try:
-        from transformers import AutoConfig, AutoModel
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "transformers is required for GR-Lite training. Install with: pip install transformers"
-        ) from exc
-
     print(f"Loading GR-Lite model from: {model_name}")
-    model_cfg = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    if hasattr(model_cfg, "is_crop"):
-        model_cfg.is_crop = False
-    base_model = AutoModel.from_pretrained(model_name, config=model_cfg, trust_remote_code=True)
-    base_model = base_model.to(device)
+    base_model = load_grlite_base_model(model_name=model_name, device=device)
     model: nn.Module = GRLiteTensorEncoder(base_model).to(device)
     used_gpu_ids: List[int] = []
     if device.type == "cuda" and params.multi_gpu and torch.cuda.device_count() > 1:
@@ -520,7 +571,7 @@ def train_grlite_retrieval(
         ckpt_path = Path(to_absolute_path(resume_checkpoint))
         if not ckpt_path.exists():
             raise FileNotFoundError(f"params.grlite_resume_checkpoint does not exist: {ckpt_path}")
-        payload = torch.load(ckpt_path, map_location="cpu")
+        payload = torch_load_any(ckpt_path, map_location="cpu")
         state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
         if not isinstance(state_dict, dict):
             raise RuntimeError(f"Invalid checkpoint format at {ckpt_path}")

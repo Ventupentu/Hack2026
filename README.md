@@ -208,43 +208,47 @@ Outputs:
 
 `src/infer.py` now supports switching encoder backend through Hydra config.
 
-Run inference with GR-Lite:
+Train GR-Lite (2 GPUs + data local):
 
 ```bash
-python -m src.infer \
+python3 -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.epochs=12 \
+  params.batch_size=48 \
+  params.grad_accum=2 \
+  params.lr=5e-6 \
+  params.weight_decay=5e-5 \
+  params.grlite_temperature=0.05 \
+  params.grlite_val_ratio=0.15 \
+  params.multi_gpu=true \
+  'params.gpu_ids="0,1"' \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
+```
+
+Run inference and export submission CSV with the fine-tuned checkpoint:
+
+```bash
+python3 -m src.infer \
   infer.encoder_backend=gr-lite \
   infer.grlite_model_name=srpone/gr-lite \
   infer.grlite_feature_dim=256 \
+  infer.checkpoint_path=outputs/.../retrieval_gr_lite/best.pt \
   params.multi_gpu=true \
-  params.gpu_ids=0,1 \
-  infer.checkpoint_path=outputs/.../retrieval_gr_lite/best.pt
+  'params.gpu_ids="0,1"' \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
 ```
 
-Notes:
-- `infer.grlite_model_name` can be a Hugging Face repo id or a local folder path.
-- `infer.grlite_feature_dim` must match the model output dimension used by `.search()`.
-- `infer.checkpoint_path` is optional. If provided with `gr-lite`, it loads fine-tuned `.pt` weights.
-
-## GR-Lite Fine-Tuning (Training)
-
-You can fine-tune GR-Lite for a few epochs with the same training entrypoint:
+Resume training from a previous checkpoint:
 
 ```bash
-python -m src.train \
-  params.model_name=gr-lite \
-  params.grlite_model_name=srpone/gr-lite \
-  params.epochs=3 \
-  params.batch_size=32 \
-  params.lr=1e-5 \
-  params.multi_gpu=true \
-  params.gpu_ids=0,1 \
-  params.grlite_temperature=0.07
-```
-
-Resume from a previous `.pt` checkpoint:
-
-```bash
-python -m src.train \
+python3 -m src.train \
   params.model_name=gr-lite \
   params.grlite_model_name=srpone/gr-lite \
   params.grlite_resume_checkpoint=outputs/.../retrieval_gr_lite/last.pt \
@@ -252,6 +256,7 @@ python -m src.train \
 ```
 
 Useful knobs:
+- `params.gpu_ids` must be quoted in Hydra, for example `'params.gpu_ids="0,1"'`.
 - `params.grlite_input_size` (default `518`)
 - `params.grlite_feature_dim` (default `256`)
 - `params.grlite_val_ratio` (used when train/val manifest are the same file)
