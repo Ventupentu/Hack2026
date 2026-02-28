@@ -28,6 +28,7 @@ def main(cfg: InditexConfig) -> None:
     products_manifest = data_dir / "product_dataset.csv"
     bundles_images_dir = Path(to_absolute_path(files.bundles_images))
     products_images_dir = Path(to_absolute_path(files.products_images))
+    yolo_detections_dir = Path(to_absolute_path(files.yolo_detections_dir))
     output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
 
     train_retrieval_model(
@@ -38,6 +39,7 @@ def main(cfg: InditexConfig) -> None:
         bundles_images_dir=bundles_images_dir,
         products_images_dir=products_images_dir,
         output_dir=output_dir,
+        cache_dir=yolo_detections_dir,
     )
 
 

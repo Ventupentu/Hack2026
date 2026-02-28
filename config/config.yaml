@@ -12,8 +12,8 @@ params:
   num_workers: 4
   device: cuda
   model_name: openclip_marqo_siglip
-  multi_gpu: true
-  gpu_ids: "0,1"
+  multi_gpu: false
+  gpu_ids: "0"
   amp: true
   grad_accum: 1
   log_every: 50

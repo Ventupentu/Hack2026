@@ -16,6 +16,7 @@ def train_retrieval_model(
     bundles_images_dir: Path,
     products_images_dir: Path,
     output_dir: Path,
+    cache_dir: Path,
 ) -> None:
     """Dispatch retrieval training by configured model backend."""
     model_name = getattr(cfg.params, "model_name", "openclip_marqo_siglip")
@@ -28,6 +29,7 @@ def train_retrieval_model(
             bundles_images_dir=bundles_images_dir,
             products_images_dir=products_images_dir,
             output_dir=output_dir,
+            cache_dir=cache_dir,
         )
         return
 
