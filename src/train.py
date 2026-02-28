@@ -1,47 +1,27 @@
-"""Hydra entrypoint for retrieval training."""
+"""Backward-compatible wrapper for retrieval training entrypoint."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-import hydra
-from hydra.core.config_store import ConfigStore
-from hydra.core.hydra_config import HydraConfig
-from hydra.utils import to_absolute_path
 
-from src.config import InditexConfig
-from src.models import train_retrieval_model
-
-
-cs = ConfigStore.instance()
-cs.store(name="inditex_config", node=InditexConfig)
+def _ensure_project_root_on_path() -> None:
+    this_file = Path(__file__).resolve()
+    for parent in this_file.parents:
+        if (parent / "src").is_dir():
+            root = str(parent)
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            return
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="config")
-def main(cfg: InditexConfig) -> None:
-    """Resolve paths from Hydra and launch selected trainer backend."""
-    files = cfg.files
+_ensure_project_root_on_path()
 
-    data_dir = Path(to_absolute_path(files.data_dir))
-    train_manifest = data_dir / "bundles_product_match_train.csv"
-    val_manifest = data_dir / "bundles_product_match_train.csv"
-    products_manifest = data_dir / "product_dataset_with_gender.csv"
-    bundles_images_dir = Path(to_absolute_path(files.bundles_images))
-    products_images_dir = Path(to_absolute_path(files.products_images))
-    yolo_detections_dir = Path(to_absolute_path(files.yolo_detections_dir))
-    output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
+from src.workflows import train_retrieval as _impl
 
-    train_retrieval_model(
-        cfg=cfg,
-        train_manifest=train_manifest,
-        val_manifest=val_manifest,
-        products_manifest=products_manifest,
-        bundles_images_dir=bundles_images_dir,
-        products_images_dir=products_images_dir,
-        output_dir=output_dir,
-        cache_dir=yolo_detections_dir,
-    )
-
+# Re-export public and internal symbols for import compatibility.
+globals().update({k: v for k, v in vars(_impl).items() if not k.startswith("__")})
 
 if __name__ == "__main__":
-    main()
+    _impl.main()
