@@ -1,5 +1,5 @@
 # Paths for retrieval training
 data_dir: data
-bundles_images: /scratch/tesla8/sgrodriguez23/images/bundle_images
-products_images: /scratch/tesla8/sgrodriguez23/images/product_images
-yolo_detections_dir: /scratch/tesla8/sgrodriguez23/yolo_detections
+bundles_images: data/bundle_images
+products_images: data/product_images
+yolo_detections_dir: data/yolo_detections
