@@ -2,3 +2,5 @@ pandas
 requests
 tqdm
 hydra-core
+ultralytics
+ultralyticsplus
