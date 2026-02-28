@@ -28,18 +28,32 @@ from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):
-    """Wrapper exposing multimodal forward for DataParallel."""
+    """Wrapper exposing multimodal forward for DataParallel.
+
+    Includes:
+      - Learnable fusion gate (alpha) for weighted image+text combination
+      - Learnable log-temperature for contrastive loss
+    """
 
     def __init__(self, clip_model: nn.Module) -> None:
         super().__init__()
         self.clip_model = clip_model
+        # Learnable fusion gate: alpha * image + (1-alpha) * text
+        self.fusion_alpha = nn.Parameter(torch.tensor(0.5))
+        # Learnable temperature for contrastive loss (ln(1/0.07) ≈ 2.659)
+        self.log_temperature = nn.Parameter(torch.log(torch.tensor(1.0 / 0.07)))
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        """Clamped temperature value."""
+        return (1.0 / self.log_temperature.exp()).clamp(min=0.01, max=0.5)
 
     def forward(self, images: torch.Tensor, text: Optional[torch.Tensor] = None) -> torch.Tensor:
         if text is not None:
             image_features = self.clip_model.encode_image(images)
             text_features = self.clip_model.encode_text(text)
-            # Combine vision and text for the product representation
-            return image_features + text_features
+            alpha = torch.sigmoid(self.fusion_alpha)
+            return alpha * image_features + (1 - alpha) * text_features
         return self.clip_model.encode_image(images)
 
 
@@ -323,8 +337,12 @@ def crop_with_box(image: Image.Image, box: BoxXYXY) -> Image.Image:
     return image.crop((x1, y1, x2, y2))
 
 
-class BundlePositiveDataset(Dataset):
-    """One training sample per detected bundle region (or full image fallback)."""
+class BundleMultiPositiveDataset(Dataset):
+    """One sample per bundle, returning ALL positive products for multi-positive loss.
+
+    Also supports hard negatives: if hard_negatives dict is provided,
+    includes the pre-mined hard negative product images in the batch.
+    """
 
     def __init__(
         self,
@@ -335,7 +353,9 @@ class BundlePositiveDataset(Dataset):
         bundle_transform: Callable[[Image.Image], torch.Tensor],
         product_transform: Callable[[Image.Image], torch.Tensor],
         tokenizer: Any,
-        bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
+        max_positives: int = 8,
+        hard_negatives: Optional[Dict[str, List[str]]] = None,
+        max_hard_negatives: int = 4,
     ) -> None:
         self.bundle_ids = sorted(bundle_to_products.keys())
         self.bundle_to_image = bundle_to_image
@@ -345,74 +365,151 @@ class BundlePositiveDataset(Dataset):
         self.bundle_transform = bundle_transform
         self.product_transform = product_transform
         self.tokenizer = tokenizer
-        self.bundle_to_boxes = bundle_to_boxes or {}
-        self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
-        for bundle_id in self.bundle_ids:
-            boxes = self.bundle_to_boxes.get(bundle_id, [])
-            if boxes:
-                self.samples.extend((bundle_id, box) for box in boxes)
-            else:
-                self.samples.append((bundle_id, None))
-        self.num_unique_bundles = len(self.bundle_ids)
+        self.max_positives = max_positives
+        self.hard_negatives = hard_negatives or {}
+        self.max_hard_negatives = max_hard_negatives
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
-        bundle_id, crop_box = self.samples[idx]
-        product_ids = self.bundle_to_products[bundle_id]
-        product_id = random.choice(product_ids)
+        bundle_id = self.bundle_ids[idx]
+        all_product_ids = self.bundle_to_products[bundle_id]
+
+        # Sample up to max_positives from the positive set
+        if len(all_product_ids) > self.max_positives:
+            pos_ids = random.sample(all_product_ids, self.max_positives)
+        else:
+            pos_ids = list(all_product_ids)
+
         bundle_img = open_image_safe(self.bundle_to_image[bundle_id])
-        product_img = open_image_safe(self.product_to_image[product_id])
-        if bundle_img is None or product_img is None:
+        if bundle_img is None:
             return None
-        if crop_box is not None:
-            bundle_img = crop_with_box(bundle_img, crop_box)
-        out = {
-            "bundle_id": bundle_id,
-            "product_id": product_id,
-            "bundle_img": self.bundle_transform(bundle_img),
-            "product_img": self.product_transform(product_img),
-        }
-        text = self.product_to_text.get(product_id, "")
-        if text:
-            # Tokenizer returns a batch of 1, squeeze to [context_length]
-            out["product_text"] = self.tokenizer(text).squeeze(0)
-        return out
 
-
-class BundleRegionDataset(Dataset):
-    """Dataset yielding one crop per detected bundle box (or full-image fallback)."""
-
-    def __init__(
-        self,
-        bundle_ids: Sequence[str],
-        bundle_to_image: Dict[str, Path],
-        transform: Callable[[Image.Image], torch.Tensor],
-        bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
-    ) -> None:
-        self.bundle_to_image = bundle_to_image
-        self.transform = transform
-        self.bundle_to_boxes = bundle_to_boxes or {}
-        self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
-        for bundle_id in sorted(bundle_ids):
-            boxes = self.bundle_to_boxes.get(bundle_id, [])
-            if boxes:
-                self.samples.extend((bundle_id, box) for box in boxes)
+        pos_imgs: List[torch.Tensor] = []
+        pos_texts: List[torch.Tensor] = []
+        valid_pos_ids: List[str] = []
+        for pid in pos_ids:
+            img = open_image_safe(self.product_to_image[pid])
+            if img is None:
+                continue
+            pos_imgs.append(self.product_transform(img))
+            valid_pos_ids.append(pid)
+            text = self.product_to_text.get(pid, "")
+            if text:
+                pos_texts.append(self.tokenizer(text).squeeze(0))
             else:
-                self.samples.append((bundle_id, None))
+                pos_texts.append(None)
 
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        bundle_id, crop_box = self.samples[idx]
-        img = open_image_safe(self.bundle_to_image[bundle_id])
-        if img is None:
+        if not pos_imgs:
             return None
-        if crop_box is not None:
-            img = crop_with_box(img, crop_box)
-        return {"id": bundle_id, "img": self.transform(img)}
+
+        # Hard negatives
+        neg_imgs: List[torch.Tensor] = []
+        neg_texts: List[torch.Tensor] = []
+        neg_ids: List[str] = []
+        hn_list = self.hard_negatives.get(bundle_id, [])
+        hn_sample = hn_list[:self.max_hard_negatives]
+        for nid in hn_sample:
+            if nid in self.product_to_image:
+                img = open_image_safe(self.product_to_image[nid])
+                if img is None:
+                    continue
+                neg_imgs.append(self.product_transform(img))
+                neg_ids.append(nid)
+                text = self.product_to_text.get(nid, "")
+                if text:
+                    neg_texts.append(self.tokenizer(text).squeeze(0))
+                else:
+                    neg_texts.append(None)
+
+        return {
+            "bundle_id": bundle_id,
+            "bundle_img": self.bundle_transform(bundle_img),
+            "pos_imgs": pos_imgs,         # List[Tensor]
+            "pos_texts": pos_texts,       # List[Optional[Tensor]]
+            "pos_ids": valid_pos_ids,     # List[str]
+            "neg_imgs": neg_imgs,         # List[Tensor]
+            "neg_texts": neg_texts,       # List[Optional[Tensor]]
+            "neg_ids": neg_ids,           # List[str]
+            "num_pos": len(pos_imgs),
+            "num_neg": len(neg_imgs),
+        }
+
+
+def collate_multi_positive(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """Collate for multi-positive batches with variable numbers of positives/negatives.
+
+    Returns:
+        bundle_imgs: [B, C, H, W]
+        product_imgs: [N_total, C, H, W]  (all positives + hard negatives concatenated)
+        product_texts: [N_total, context_len] or None
+        pos_mask: [B, N_total] boolean — True where product is a positive for that bundle
+        bundle_ids, product_ids: lists for debugging
+    """
+    batch = [item for item in batch if item is not None]
+    if not batch:
+        return None
+
+    bundle_imgs = torch.stack([item["bundle_img"] for item in batch], dim=0)
+
+    # Flatten all product images (positives + hard negatives) into one big tensor
+    all_product_imgs: List[torch.Tensor] = []
+    all_product_texts: List[Optional[torch.Tensor]] = []
+    all_product_ids: List[str] = []
+    # pos_mask[i, j] = True if product j is a positive for bundle i
+    pos_ranges: List[Tuple[int, int]] = []  # (start, end) of positives for each bundle
+
+    offset = 0
+    for item in batch:
+        n_pos = item["num_pos"]
+        n_neg = item["num_neg"]
+        all_product_imgs.extend(item["pos_imgs"])
+        all_product_texts.extend(item["pos_texts"])
+        all_product_ids.extend(item["pos_ids"])
+        pos_ranges.append((offset, offset + n_pos))
+        offset += n_pos
+        all_product_imgs.extend(item["neg_imgs"])
+        all_product_texts.extend(item["neg_texts"])
+        all_product_ids.extend(item["neg_ids"])
+        offset += n_neg
+
+    product_imgs = torch.stack(all_product_imgs, dim=0) if all_product_imgs else None
+
+    # Build text tensor if any texts exist
+    has_any_text = any(t is not None for t in all_product_texts)
+    product_texts = None
+    if has_any_text and all_product_texts:
+        # Find a valid text tensor to get the shape
+        text_shape = None
+        for t in all_product_texts:
+            if t is not None:
+                text_shape = t.shape
+                break
+        if text_shape is not None:
+            text_list = []
+            for t in all_product_texts:
+                if t is not None:
+                    text_list.append(t)
+                else:
+                    text_list.append(torch.zeros(text_shape, dtype=torch.long))
+            product_texts = torch.stack(text_list, dim=0)
+
+    # Build pos_mask
+    B = len(batch)
+    N = len(all_product_imgs)
+    pos_mask = torch.zeros(B, N, dtype=torch.bool)
+    for i, (start, end) in enumerate(pos_ranges):
+        pos_mask[i, start:end] = True
+
+    return {
+        "bundle_imgs": bundle_imgs,
+        "product_imgs": product_imgs,
+        "product_texts": product_texts,
+        "pos_mask": pos_mask,
+        "bundle_ids": [item["bundle_id"] for item in batch],
+        "product_ids": all_product_ids,
+    }
 
 
 class AssetImageDataset(Dataset):
@@ -456,6 +553,119 @@ def collate_skip_none(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dic
         else:
             out[key] = values
     return out
+
+
+def compute_hard_negatives(
+    model: nn.Module,
+    preprocess_val: Any,
+    device: torch.device,
+    amp: bool,
+    bundle_to_image: Dict[str, Path],
+    bundle_to_products: Dict[str, Set[str]],
+    product_to_image: Dict[str, Path],
+    product_to_text: Dict[str, str],
+    tokenizer: Any,
+    batch_size: int,
+    num_workers: int,
+    top_k: int = 16,
+) -> Dict[str, List[str]]:
+    """Pre-compute gallery embeddings and mine top-K hard negatives per bundle.
+
+    Hard negatives are the closest products in the embedding space that are NOT
+    in the positive set for each bundle.
+    """
+    print("Mining hard negatives from full gallery...")
+    t0 = time.time()
+
+    product_ids_list = sorted(product_to_image.keys())
+    product_loader = DataLoader(
+        AssetImageDataset(product_ids_list, product_to_image, preprocess_val,
+                          id_to_text=product_to_text, tokenizer=tokenizer),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_skip_none,
+    )
+    encoded_product_ids, product_embs = encode_images(model, product_loader, device, amp)
+
+    bundle_ids_list = sorted(bundle_to_products.keys())
+    bundle_loader = DataLoader(
+        AssetImageDataset(bundle_ids_list, bundle_to_image, preprocess_val),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_skip_none,
+    )
+    encoded_bundle_ids, bundle_embs = encode_images(model, bundle_loader, device, amp)
+
+    pid_to_idx = {pid: i for i, pid in enumerate(encoded_product_ids)}
+
+    hard_neg_dict: Dict[str, List[str]] = {}
+    # Process in batches to avoid OOM on large galleries
+    for start in range(0, len(encoded_bundle_ids), batch_size):
+        end = min(start + batch_size, len(encoded_bundle_ids))
+        batch_ids = encoded_bundle_ids[start:end]
+        batch_emb = bundle_embs[start:end]
+        sims = batch_emb @ product_embs.T  # [B, N_products]
+
+        # Get top-(top_k + max_positives) to have room after filtering positives
+        topk_val = min(top_k + 20, sims.shape[1])
+        _, topk_idx = torch.topk(sims, k=topk_val, dim=1, largest=True, sorted=True)
+
+        for row, bid in enumerate(batch_ids):
+            pos_pids = bundle_to_products.get(bid, set())
+            pos_indices = {pid_to_idx[pid] for pid in pos_pids if pid in pid_to_idx}
+            hard_negs: List[str] = []
+            for col_idx in topk_idx[row].tolist():
+                if col_idx not in pos_indices:
+                    hard_negs.append(encoded_product_ids[col_idx])
+                    if len(hard_negs) >= top_k:
+                        break
+            hard_neg_dict[bid] = hard_negs
+
+    elapsed = time.time() - t0
+    print(f"Hard negative mining done in {elapsed:.1f}s — mined for {len(hard_neg_dict)} bundles")
+    return hard_neg_dict
+
+
+def multi_positive_nce_loss(
+    bundle_embs: torch.Tensor,
+    product_embs: torch.Tensor,
+    pos_mask: torch.Tensor,
+    temperature: torch.Tensor,
+) -> torch.Tensor:
+    """Multi-positive NCE loss.
+
+    L = -log( sum(exp(s_pos/τ)) / sum(exp(s_all/τ)) )  per bundle, averaged.
+
+    Args:
+        bundle_embs: [B, D] normalized bundle embeddings
+        product_embs: [N, D] normalized product embeddings (positives + negatives)
+        pos_mask: [B, N] boolean mask, True for positives
+        temperature: scalar or Tensor
+    """
+    # Similarity matrix [B, N]
+    logits = (bundle_embs @ product_embs.T) / temperature
+
+    # For numerical stability
+    logits_max = logits.max(dim=1, keepdim=True).values
+    logits = logits - logits_max
+
+    exp_logits = torch.exp(logits)
+
+    # Sum of exp over all products
+    log_denom = torch.log(exp_logits.sum(dim=1) + 1e-8)  # [B]
+
+    # Sum of exp over positive products only
+    pos_exp = (exp_logits * pos_mask.float()).sum(dim=1)
+    log_pos_sum = torch.log(pos_exp + 1e-8)  # [B]
+
+    # Loss per bundle: -log(sum_pos / sum_all)
+    loss = -(log_pos_sum - log_denom)
+
+    return loss.mean()
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, total_steps: int) -> LambdaLR:
@@ -664,10 +874,12 @@ def save_checkpoint(
     epoch: int,
     best_metric: float,
     cfg: InditexConfig,
+    encoder_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save checkpoint state."""
     payload = {
         "model": model.state_dict(),
+        "encoder": encoder_state,
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict() if scaler is not None else None,
         "epoch": epoch,
@@ -767,33 +979,54 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             for bundle_id in val_bundle_to_image
         }
 
-    train_dataset = BundlePositiveDataset(
-        bundle_to_image=train_bundle_to_image,
-        bundle_to_products=train_bundle_to_products,
-        product_to_image=product_to_image,
-        product_to_text=product_to_text,
-        bundle_transform=preprocess_train,
-        product_transform=preprocess_train,
-        tokenizer=tokenizer,
-        bundle_to_boxes=train_bundle_to_boxes,
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=params.batch_size,
-        shuffle=True,
-        num_workers=params.num_workers,
-        pin_memory=(device.type == "cuda"),
-        collate_fn=collate_skip_none,
-        drop_last=False,
-    )
+    # --- Hard negative mining settings ---
+    mine_every = getattr(params, 'mine_every', 3)       # re-mine every N epochs
+    hard_neg_top_k = getattr(params, 'hard_neg_top_k', 16)
+    max_hard_negatives = getattr(params, 'max_hard_negatives', 4)
+    max_positives = getattr(params, 'max_positives', 8)
 
-    optimizer = AdamW(core_model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
+    hard_negatives: Dict[str, List[str]] = {}  # empty initially — first epoch uses in-batch only
+
+    def build_train_loader(hard_negs: Dict[str, List[str]]) -> Tuple[BundleMultiPositiveDataset, DataLoader]:
+        ds = BundleMultiPositiveDataset(
+            bundle_to_image=train_bundle_to_image,
+            bundle_to_products=train_bundle_to_products,
+            product_to_image=product_to_image,
+            product_to_text=product_to_text,
+            bundle_transform=preprocess_train,
+            product_transform=preprocess_train,
+            tokenizer=tokenizer,
+            max_positives=max_positives,
+            hard_negatives=hard_negs,
+            max_hard_negatives=max_hard_negatives,
+        )
+        loader = DataLoader(
+            ds,
+            batch_size=params.batch_size,
+            shuffle=True,
+            num_workers=params.num_workers,
+            pin_memory=(device.type == "cuda"),
+            collate_fn=collate_multi_positive,
+            drop_last=False,
+        )
+        return ds, loader
+
+    train_dataset, train_loader = build_train_loader(hard_negatives)
+
+    # Get the underlying multimodal encoder (unwrap DataParallel if needed)
+    multimodal_encoder = image_model.module if isinstance(image_model, nn.DataParallel) else image_model
+
+    # Optimizer includes: CLIP backbone + fusion_alpha + log_temperature
+    param_groups = [
+        {"params": core_model.parameters(), "lr": params.lr},
+        {"params": [multimodal_encoder.fusion_alpha, multimodal_encoder.log_temperature], "lr": params.lr * 10},
+    ]
+    optimizer = AdamW(param_groups, weight_decay=params.weight_decay)
     updates_per_epoch = max(1, math.ceil(len(train_loader) / params.grad_accum))
     scheduler = build_scheduler(optimizer, total_steps=params.epochs * updates_per_epoch)
     scaler: Optional[torch.cuda.amp.GradScaler] = (
         torch.cuda.amp.GradScaler(enabled=True) if params.amp and device.type == "cuda" else None
     )
-    temperature = 0.07
 
     best_recall = -1.0
     train_boxes = sum(len(v) for v in (train_bundle_to_boxes or {}).values())
@@ -807,36 +1040,63 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         f"Detected train boxes: {train_boxes} | Detected val boxes: {val_boxes}"
     )
     print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2}")
+    print(f"Hard negative mining every {mine_every} epochs, top_k={hard_neg_top_k}, max_per_sample={max_hard_negatives}")
+    print(f"Multi-positive loss with max_positives={max_positives}, learnable temperature")
 
     for epoch in range(1, params.epochs + 1):
         epoch_start = time.time()
+
+        # --- Hard negative mining step ---
+        if epoch > 1 and (epoch - 1) % mine_every == 0:
+            hard_negatives = compute_hard_negatives(
+                model=image_model,
+                preprocess_val=preprocess_val,
+                device=device,
+                amp=params.amp,
+                bundle_to_image=train_bundle_to_image,
+                bundle_to_products=train_bundle_to_products,
+                product_to_image=product_to_image,
+                product_to_text=product_to_text,
+                tokenizer=tokenizer,
+                batch_size=params.batch_size,
+                num_workers=params.num_workers,
+                top_k=hard_neg_top_k,
+            )
+            train_dataset, train_loader = build_train_loader(hard_negatives)
+
         image_model.train()
         running_loss = 0.0
         count_steps = 0
         optimizer.zero_grad(set_to_none=True)
 
+        # Get temperature from the model
+        temperature = multimodal_encoder.temperature
+
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{params.epochs}", leave=False)
         for step, batch in enumerate(progress, start=1):
             if batch is None:
                 continue
-            bundle_imgs = batch["bundle_img"].to(device, non_blocking=True)
-            product_imgs = batch["product_img"].to(device, non_blocking=True)
+            bundle_imgs = batch["bundle_imgs"].to(device, non_blocking=True)
+            product_imgs = batch["product_imgs"].to(device, non_blocking=True)
+            pos_mask = batch["pos_mask"].to(device, non_blocking=True)
+
             if bundle_imgs.shape[0] < 2:
                 continue
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
                 bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
-                if "product_text" in batch and batch["product_text"] is not None:
-                    product_texts = batch["product_text"].to(device, non_blocking=True)
+
+                if batch["product_texts"] is not None:
+                    product_texts = batch["product_texts"].to(device, non_blocking=True)
                     product_emb = F.normalize(image_model(product_imgs, text=product_texts).float(), p=2, dim=1)
                 else:
                     product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
-                
-                logits = (bundle_emb @ product_emb.T) / temperature
-                targets = torch.arange(logits.shape[0], device=device)
-                loss_b2p = F.cross_entropy(logits, targets)
-                loss_p2b = F.cross_entropy(logits.T, targets)
-                loss = 0.5 * (loss_b2p + loss_p2b)
+
+                # Use learnable temperature (refresh each step)
+                temperature = multimodal_encoder.temperature
+
+                # Multi-positive NCE loss
+                loss = multi_positive_nce_loss(bundle_emb, product_emb, pos_mask, temperature)
                 loss = loss / params.grad_accum
 
             if scaler is not None:
@@ -861,9 +1121,11 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             if step % params.log_every == 0:
                 avg_loss = running_loss / max(1, count_steps)
                 lr_now = optimizer.param_groups[0]["lr"]
+                temp_val = float(multimodal_encoder.temperature.item())
+                alpha_val = float(torch.sigmoid(multimodal_encoder.fusion_alpha).item())
                 print(
                     f"[epoch {epoch} step {step}] loss={avg_loss:.5f} lr={lr_now:.7f} "
-                    f"bs={bundle_imgs.shape[0]}"
+                    f"τ={temp_val:.4f} α={alpha_val:.3f} bs={bundle_imgs.shape[0]}"
                 )
 
         train_loss = running_loss / max(1, count_steps)
@@ -885,8 +1147,10 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         )
         epoch_time = time.time() - epoch_start
         lr_now = optimizer.param_groups[0]["lr"]
+        temp_val = float(multimodal_encoder.temperature.item())
+        alpha_val = float(torch.sigmoid(multimodal_encoder.fusion_alpha).item())
 
-        print(f"Epoch {epoch}: train_loss={train_loss:.6f} recall@{params.recall_k}={recall_val:.6f}")
+        print(f"Epoch {epoch}: train_loss={train_loss:.6f} recall@{params.recall_k}={recall_val:.6f} τ={temp_val:.4f} α={alpha_val:.3f}")
         print(f"Val #positives per bundle distribution: {pos_dist}")
 
         metric_row = {
@@ -894,6 +1158,8 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             "loss_train": train_loss,
             f"recall@{params.recall_k}": recall_val,
             "lr": lr_now,
+            "temperature": temp_val,
+            "fusion_alpha": alpha_val,
             "epoch_seconds": epoch_time,
         }
         append_metrics(metrics_path, metric_row)
@@ -907,6 +1173,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 epoch=epoch,
                 best_metric=best_recall,
                 cfg=cfg,
+                encoder_state=multimodal_encoder.state_dict(),
             )
 
         if recall_val > best_recall:
@@ -919,6 +1186,9 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 epoch=epoch,
                 best_metric=best_recall,
                 cfg=cfg,
+                encoder_state=multimodal_encoder.state_dict(),
             )
 
     print(f"Training complete. Best recall@{params.recall_k}: {best_recall:.6f}")
+    print(f"Final temperature: {float(multimodal_encoder.temperature.item()):.4f}")
+    print(f"Final fusion alpha: {float(torch.sigmoid(multimodal_encoder.fusion_alpha).item()):.3f}")
