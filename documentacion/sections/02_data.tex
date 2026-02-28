@@ -1,0 +1,50 @@
+\section{Data and Preprocessing}
+
+\subsection{Source Datasets}
+
+The core inputs are four CSV files. Their functional role in the project is summarized in Table~\ref{tab:datasets}.
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{p{0.36\linewidth} p{0.56\linewidth}}
+    \toprule
+    \textbf{File} & \textbf{Purpose} \\
+    \midrule
+    \texttt{data/bundles\_dataset.csv} & Bundle catalog and bundle image URLs. \\
+    \texttt{data/product\_dataset.csv} & Product catalog, product image URLs, and textual descriptions. \\
+    \texttt{data/bundles\_product\_match\_train.csv} & Supervised bundle-product links for training. \\
+    \texttt{data/bundles\_product\_match\_test.csv} & Test template where \texttt{product\_asset\_id} must be predicted. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Repository datasets used by training and inference.}
+  \label{tab:datasets}
+\end{table}
+
+\subsection{Preprocessing Pipeline}
+
+Script \texttt{preprocess\_data.py} provides:
+\begin{enumerate}
+  \item Schema checks for required columns and referential integrity.
+  \item Cleaning of product description labels, including exclusion of predefined cosmetic/perfume categories.
+  \item Stratified train/validation split by number of labels per bundle.
+  \item Concurrent image download with retry logic and forbidden URL logging.
+  \item JSONL manifest generation and preprocessing statistics.
+\end{enumerate}
+
+The script produces:
+\begin{itemize}
+  \item \texttt{manifests/train\_manifest.jsonl}
+  \item \texttt{manifests/val\_manifest.jsonl}
+  \item \texttt{labels.json}, \texttt{label2idx.json}, and \texttt{stats.json}
+\end{itemize}
+
+\subsection{Offline Augmentation}
+
+Script \texttt{offline\_augment.py} generates deterministic, seed-controlled augmented views for both bundles and products. It applies resized crops, color jitter, optional horizontal flips, Gaussian blur, optional cutout (bundles), and JPEG quality perturbation. Augmented images and manifests are saved as:
+\begin{itemize}
+  \item \texttt{bundles\_aug/*.jpg}, \texttt{bundles\_aug\_manifest.jsonl}
+  \item \texttt{products\_aug/*.jpg}, \texttt{products\_aug\_manifest.jsonl}
+\end{itemize}
+
+This design is aligned with the one-image-per-product constraint, where robust product representations require synthetic view expansion.
