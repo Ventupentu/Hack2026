@@ -17,6 +17,24 @@ class Params:
     num_workers: int = 4
     device: str = "cuda"
     model_name: str = "openclip_marqo_siglip"
+<<<<<<< Updated upstream
+=======
+    grlite_model_name: str = "srpone/gr-lite"
+    grlite_input_size: int = 518
+    grlite_feature_dim: int = 256
+    grlite_temperature: float = 0.07
+    grlite_val_ratio: float = 0.1
+    grlite_resume_checkpoint: str = ""
+    grlite_tune_mode: str = "full"
+    grlite_train_last_n_layers: int = 2
+    grlite_unfreeze_layernorm: bool = True
+    grlite_use_lora: bool = False
+    grlite_lora_r: int = 8
+    grlite_lora_alpha: float = 16.0
+    grlite_lora_dropout: float = 0.05
+    grlite_lora_target_modules: str = "q_proj,v_proj"
+    grlite_lora_last_n_layers: int = 0
+>>>>>>> Stashed changes
     multi_gpu: bool = False
     gpu_ids: str = "0,1"
     amp: bool = True

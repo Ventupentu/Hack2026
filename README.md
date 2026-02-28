@@ -203,3 +203,115 @@ Outputs:
 ### Inference & Output
 - Batched GPU inference for embeddings and detection
 - Deterministic post-processing to enforce top-15-per-bundle output constraint
+<<<<<<< Updated upstream
+=======
+
+## GR-Lite Backend (Inference)
+
+`src/infer.py` now supports switching encoder backend through Hydra config.
+
+Train GR-Lite (2 GPUs + data local):
+
+```bash
+python3 -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.epochs=12 \
+  params.batch_size=48 \
+  params.grad_accum=2 \
+  params.lr=5e-6 \
+  params.weight_decay=5e-5 \
+  params.grlite_temperature=0.05 \
+  params.grlite_val_ratio=0.15 \
+  params.multi_gpu=true \
+  'params.gpu_ids="0,1"' \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
+```
+
+Run inference and export submission CSV with the fine-tuned checkpoint:
+
+```bash
+python3 -m src.infer \
+  infer.encoder_backend=gr-lite \
+  infer.grlite_model_name=srpone/gr-lite \
+  infer.grlite_feature_dim=256 \
+  infer.checkpoint_path=outputs/.../retrieval_gr_lite/best.pt \
+  params.grlite_use_lora=false \
+  params.multi_gpu=true \
+  'params.gpu_ids="0,1"' \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
+```
+
+Resume training from a previous checkpoint:
+
+```bash
+python3 -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.grlite_resume_checkpoint=outputs/.../retrieval_gr_lite/last.pt \
+  params.epochs=8
+```
+
+Useful knobs:
+- `params.gpu_ids` must be quoted in Hydra, for example `'params.gpu_ids="0,1"'`.
+- `params.grlite_tune_mode`: `full` (entrena todo) o `last_n` (entrena solo las últimas capas).
+- `params.grlite_train_last_n_layers`: cuántas capas finales ajustar cuando `tune_mode=last_n`.
+- `params.grlite_unfreeze_layernorm`: mantiene LayerNorm entrenable en modo parcial.
+- `params.grlite_use_lora`: activa LoRA sobre capas lineales objetivo.
+- `params.grlite_lora_target_modules`: módulos lineales (csv), por ejemplo `q_proj,v_proj`.
+- `params.grlite_lora_r` / `params.grlite_lora_alpha` / `params.grlite_lora_dropout`: hiperparámetros LoRA.
+- `params.grlite_input_size` (default `518`)
+- `params.grlite_feature_dim` (default `256`)
+- `params.grlite_val_ratio` (used when train/val manifest are the same file)
+
+Low-memory example with LoRA (small GPUs):
+
+```bash
+python3 -m src.train \
+  params.model_name=gr-lite \
+  params.grlite_model_name=srpone/gr-lite \
+  params.grlite_input_size=384 \
+  params.grlite_use_lora=true \
+  params.grlite_tune_mode=lora \
+  params.grlite_lora_target_modules=q_proj,v_proj \
+  params.grlite_lora_r=4 \
+  params.grlite_lora_alpha=8 \
+  params.grlite_lora_dropout=0.05 \
+  params.grlite_lora_last_n_layers=2 \
+  params.grlite_unfreeze_layernorm=true \
+  params.batch_size=1 \
+  params.grad_accum=16 \
+  params.multi_gpu=false \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
+```
+
+If your checkpoint was trained with LoRA, set the same LoRA params at inference:
+
+```bash
+python3 -m src.infer \
+  infer.encoder_backend=gr-lite \
+  infer.grlite_model_name=srpone/gr-lite \
+  infer.grlite_feature_dim=256 \
+  infer.checkpoint_path=outputs/.../retrieval_gr_lite/best.pt \
+  params.grlite_use_lora=true \
+  params.grlite_lora_target_modules=q_proj,v_proj \
+  params.grlite_lora_r=4 \
+  params.grlite_lora_alpha=8 \
+  params.grlite_lora_dropout=0.05 \
+  params.grlite_lora_last_n_layers=2 \
+  params.multi_gpu=false \
+  files.data_dir=data \
+  files.bundles_images=data/bundle_images \
+  files.products_images=data/product_images \
+  files.yolo_detections_dir=data/yolo_detections
+```
+>>>>>>> Stashed changes
