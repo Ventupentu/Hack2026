@@ -7,5 +7,5 @@ bundles_product_match_test: data/bundles_product_match_test.csv
 product_dataset: data/product_dataset.csv
 
 # Image directories
-bundles_images: scratch/tesla8/sgrodriguez23/images/bundles_images
-products_images: scratch/tesla8/sgrodriguez23/images/products_images
+bundles_images: /scratch/tesla8/sgrodriguez23/images/bundle_images
+products_images: /scratch/tesla8/sgrodriguez23/images/product_images
