@@ -249,7 +249,7 @@ def parse_bundle_manifest(
 
 def detect_bundle_boxes_with_cache(
     bundle_to_image: Dict[str, Path],
-    output_dir: Path,
+    cache_dir: Path,
     model_id: str,
     conf_threshold: float,
     iou_threshold: float,
@@ -257,12 +257,17 @@ def detect_bundle_boxes_with_cache(
     min_area_ratio: float,
     cache_path: str,
 ) -> Dict[str, List[BoxXYXY]]:
-    """Detect and cache XYXY boxes for each bundle image."""
-    resolved_cache = (
-        Path(cache_path).expanduser().resolve()
-        if cache_path
-        else (output_dir / "bundle_boxes_cache.json").resolve()
-    )
+    """Detect and cache XYXY boxes for each bundle image.
+
+    The cache filename encodes the detection parameters so that changing
+    conf_threshold, iou_threshold, etc. automatically invalidates the cache.
+    The cache lives in cache_dir (data_dir) so it persists across training runs.
+    """
+    if cache_path:
+        resolved_cache = Path(cache_path).expanduser().resolve()
+    else:
+        cache_name = f"bundle_boxes_conf{conf_threshold}_iou{iou_threshold}_max{max_boxes_per_image}_area{min_area_ratio}.json"
+        resolved_cache = (cache_dir / cache_name).resolve()
 
     bundle_to_boxes = load_boxes_cache(resolved_cache)
     missing = {
@@ -694,7 +699,7 @@ def parse_gpu_ids(text: str) -> List[int]:
     return ids
 
 
-def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manifest: Path, products_manifest: Path, bundles_images_dir: Path, products_images_dir: Path, output_dir: Path) -> None:
+def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manifest: Path, products_manifest: Path, bundles_images_dir: Path, products_images_dir: Path, output_dir: Path, cache_dir: Path) -> None:
     """Train retrieval model with OpenCLIP backend."""
     params = cfg.params
 
@@ -750,7 +755,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         all_bundle_to_image = {**train_bundle_to_image, **val_bundle_to_image}
         all_bundle_to_boxes = detect_bundle_boxes_with_cache(
             bundle_to_image=all_bundle_to_image,
-            output_dir=output_dir,
+            cache_dir=cache_dir,
             model_id=params.bbox_model_id,
             conf_threshold=params.bbox_conf_threshold,
             iou_threshold=params.bbox_iou_threshold,
