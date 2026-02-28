@@ -1,11 +1,5 @@
-# Configuration file for data paths
-
-# CSV files
-bundles_dataset: data/bundles_dataset.csv
-bundles_product_match_train: data/bundles_product_match_train.csv
-bundles_product_match_test: data/bundles_product_match_test.csv
-product_dataset: data/product_dataset.csv
-
-# Image directories
-bundles_images: data/bundle_images
-products_images: data/product_images
+# Paths for retrieval training
+train_manifest: data/bundles_product_match_train.csv
+val_manifest: data/bundles_product_match_train.csv
+products_manifest: data/product_dataset.csv
+output_dir: outputs/retrieval_openclip
