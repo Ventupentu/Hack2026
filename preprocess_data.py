@@ -23,6 +23,31 @@ LOGGER = logging.getLogger("preprocess_data")
 SPLIT_RE = re.compile(r"[,;|/]+")
 SPACE_RE = re.compile(r"\s+")
 RARE_SEP_RE = re.compile(r"[_\t\r\n\-]+")
+EXCLUDED_CATEGORIES = {
+    "body lotion",
+    "body oil",
+    "eau de cologne",
+    "eau de parfum",
+    "eau de toilette",
+    "eye make up",
+    "eyes contour",
+    "facial cosmetics",
+    "facial sunscreen",
+    "hair cosmetics",
+    "hand cream",
+    "lip balm",
+    "lip make up",
+    "lip sunscreen",
+    "matches",
+    "moisturising cream",
+    "nail cosmetics",
+    "nail polish",
+    "perfume",
+    "perfumed soap",
+    "powder brush puff",
+    "shampoo",
+    "stationery",
+}
 
 
 @dataclass(frozen=True)
@@ -78,6 +103,13 @@ def clean_and_split_labels(description: object) -> List[str]:
         if token:
             labels.append(token)
     return labels
+
+
+def filter_excluded_categories(labels: Sequence[str]) -> Tuple[List[str], int]:
+    """Remove excluded categories from normalized labels."""
+    filtered = [label for label in labels if label not in EXCLUDED_CATEGORIES]
+    removed = len(labels) - len(filtered)
+    return filtered, removed
 
 
 def dedupe_keep_first(values: Iterable[str]) -> List[str]:
@@ -164,6 +196,7 @@ def build_bundle_records(
     labels_by_bundle: Dict[str, List[str]] = defaultdict(list)
     missing_description_count = 0
     empty_after_clean_count = 0
+    excluded_labels_count = 0
 
     for row in valid_relations.itertuples(index=False):
         bundle_id = row.bundle_asset_id
@@ -173,6 +206,8 @@ def build_bundle_records(
             missing_description_count += 1
             continue
         labels = clean_and_split_labels(description)
+        labels, removed_count = filter_excluded_categories(labels)
+        excluded_labels_count += removed_count
         if not labels:
             empty_after_clean_count += 1
             continue
@@ -180,6 +215,7 @@ def build_bundle_records(
 
     counts["products_missing_description"] = missing_description_count
     counts["products_empty_labels_after_clean"] = empty_after_clean_count
+    counts["labels_removed_excluded_categories"] = excluded_labels_count
 
     records: List[BundleRecord] = []
     bundles_without_labels = 0
@@ -555,8 +591,8 @@ def main() -> None:
     train_records, val_records = split_train_val(records, val_ratio=args.val_ratio, seed=args.seed)
 
     out_dir: Path = args.out_dir
-    bundle_img_dir = out_dir / "images" / "bundles"
-    product_img_dir = out_dir / "images" / "products"
+    bundle_img_dir = out_dir / "bundle_images"
+    product_img_dir = out_dir / "product_images"
     manifests_dir = out_dir / "manifests"
     ensure_dir(bundle_img_dir)
     ensure_dir(manifests_dir)

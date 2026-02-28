@@ -53,6 +53,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bundles_manifest", type=Path, required=True)
     parser.add_argument("--products_manifest", type=Path, required=True)
     parser.add_argument("--out_dir", type=Path, required=True)
+    parser.add_argument(
+        "--products_images_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional local products image dir used when products manifest has URLs or "
+            "no image_path. Expected filenames: <product_asset_id>.jpg/.jpeg/.png/.webp"
+        ),
+    )
 
     parser.add_argument("--bundles_num_augs", type=int, default=4)
     parser.add_argument("--products_num_augs", type=int, default=2)
@@ -112,6 +121,7 @@ def load_assets(
     manifest_path: Path,
     id_keys: Sequence[str],
     image_keys: Sequence[str],
+    fallback_image_dir: Optional[Path] = None,
 ) -> List[AssetRecord]:
     rows = read_manifest_rows(manifest_path)
     assets: List[AssetRecord] = []
@@ -121,6 +131,16 @@ def load_assets(
     for row in rows:
         asset_id = first_non_empty(row, id_keys)
         image_path = first_non_empty(row, image_keys)
+        if image_path.lower().startswith(("http://", "https://")):
+            image_path = ""
+
+        if not image_path and asset_id and fallback_image_dir is not None:
+            for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                candidate = fallback_image_dir / f"{asset_id}{ext}"
+                if candidate.exists():
+                    image_path = str(candidate)
+                    break
+
         if not asset_id or not image_path:
             skipped += 1
             continue
@@ -519,10 +539,24 @@ def main() -> None:
         id_keys=("bundle_asset_id", "bundle_id", "asset_id", "id"),
         image_keys=("image_path", "bundle_image_path", "bundle_path", "path"),
     )
+    products_images_dir: Optional[Path]
+    if args.products_images_dir is None:
+        products_images_dir = None
+        for candidate in (
+            args.products_manifest.parent / "product_images",
+            Path("data/product_images"),
+        ):
+            if candidate.exists():
+                products_images_dir = candidate.resolve()
+                break
+    else:
+        products_images_dir = args.products_images_dir.expanduser().resolve()
+
     products = load_assets(
         manifest_path=args.products_manifest,
         id_keys=("product_asset_id", "product_id", "asset_id", "id"),
-        image_keys=("image_path", "product_image_path", "product_path", "path"),
+        image_keys=("image_path", "product_image_path", "product_path", "path", "product_image_url"),
+        fallback_image_dir=products_images_dir,
     )
 
     LOGGER.info("Loaded bundle assets: %d", len(bundles))
