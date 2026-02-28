@@ -1,7 +1,7 @@
 data/preprocessed/*
 data/bundle_images
 data/product_images
-data
+data/*
 
 *.jpg
 *.png
