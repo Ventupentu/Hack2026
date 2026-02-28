@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Sequence, Set, Tuple
 
+import hydra
 import numpy as np
 import pandas as pd
+from hydra.core.config_store import ConfigStore
+from hydra.core.hydra_config import HydraConfig
+from hydra.utils import to_absolute_path
 from PIL import Image
 from tqdm import tqdm
 
@@ -24,9 +27,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency guar
         "  pip install torch torchvision"
     ) from exc
 
+from src.config import InditexConfig
 from src.models.feature_extractors import build_pretrained_encoder, resolve_device
 from src.utils.metrics import evaluate_bundle_retrieval
 from src.utils.retrieval import retrieve_topk_product_ids
+
+cs = ConfigStore.instance()
+cs.store(name="inditex_config", node=InditexConfig)
 
 
 class AssetImageDataset(Dataset):
@@ -47,33 +54,6 @@ class AssetImageDataset(Dataset):
         return asset_id, self.transform(image)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pretrained visual retrieval baseline")
-    parser.add_argument("--bundles-csv", type=Path, default=Path("data/bundles_dataset.csv"))
-    parser.add_argument("--products-csv", type=Path, default=Path("data/product_dataset.csv"))
-    parser.add_argument("--train-csv", type=Path, default=Path("data/bundles_product_match_train.csv"))
-    parser.add_argument("--test-csv", type=Path, default=Path("data/bundles_product_match_test.csv"))
-    parser.add_argument("--bundle-images-dir", type=Path, default=Path("data/bundle_images"))
-    parser.add_argument("--product-images-dir", type=Path, default=Path("data/product_images"))
-    parser.add_argument("--submission-out", type=Path, default=Path("outputs/test_submission.csv"))
-    parser.add_argument("--metrics-out", type=Path, default=Path("outputs/val_metrics.json"))
-    parser.add_argument(
-        "--model-name",
-        type=str,
-        default="resnet50",
-        choices=["resnet18", "resnet50", "efficientnet_b0"],
-    )
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--eval-ks", type=str, default="1,5,10,15")
-    parser.add_argument("--top-n-submit", type=int, default=15)
-    parser.add_argument("--amp", action="store_true", help="Use mixed precision on CUDA")
-    return parser.parse_args()
-
-
 def parse_ks(text: str) -> List[int]:
     values = []
     for token in text.split(","):
@@ -82,7 +62,7 @@ def parse_ks(text: str) -> List[int]:
             continue
         values.append(int(token))
     if not values:
-        raise ValueError("--eval-ks must contain at least one positive integer.")
+        raise ValueError("infer.eval_ks must contain at least one positive integer.")
     return sorted(set(values))
 
 
@@ -164,52 +144,70 @@ def build_gt_map(train_df: pd.DataFrame) -> Dict[str, Set[str]]:
     return gt_map
 
 
-def ensure_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+@hydra.main(version_base=None, config_path="../config", config_name="config")
+def main(cfg: InditexConfig) -> None:
+    # Resolve paths
+    data_dir = Path(to_absolute_path(cfg.files.data_dir))
+    bundles_csv = data_dir / "bundles_dataset.csv"
+    products_csv = data_dir / "product_dataset.csv"
+    train_csv = data_dir / "bundles_product_match_train.csv"
+    test_csv = data_dir / "bundles_product_match_test.csv"
+    bundle_images_dir = Path(to_absolute_path(cfg.files.bundles_images))
+    product_images_dir = Path(to_absolute_path(cfg.files.products_images))
+    output_dir = Path(HydraConfig.get().runtime.output_dir)
+    submission_out = output_dir / "test_submission.csv"
+    metrics_out = output_dir / "val_metrics.json"
 
+    # Shared params
+    seed = cfg.params.seed
+    device_str = cfg.params.device
+    batch_size = cfg.params.batch_size
+    num_workers = cfg.params.num_workers
+    model_name = cfg.params.model_name
+    use_amp = cfg.params.amp
 
-def main() -> None:
-    args = parse_args()
-    set_seed(args.seed)
-
-    eval_ks = parse_ks(args.eval_ks)
-    top_n_submit = min(args.top_n_submit, 15)
+    # Infer-specific params
+    val_ratio = cfg.infer.val_ratio
+    eval_ks = parse_ks(cfg.infer.eval_ks)
+    top_n_submit = min(cfg.infer.top_n_submit, 15)
     if top_n_submit <= 0:
-        raise ValueError("--top-n-submit must be > 0")
+        raise ValueError("infer.top_n_submit must be > 0")
 
-    bundles_df = pd.read_csv(args.bundles_csv)
-    products_df = pd.read_csv(args.products_csv)
-    train_df = pd.read_csv(args.train_csv)
-    test_df = pd.read_csv(args.test_csv)
+    set_seed(seed)
 
-    bundle_image_map = build_image_map(args.bundle_images_dir)
-    product_image_map = build_image_map(args.product_images_dir)
+    bundles_df = pd.read_csv(bundles_csv)
+    products_df = pd.read_csv(products_csv)
+    train_df = pd.read_csv(train_csv)
+    test_df = pd.read_csv(test_csv)
+
+    bundle_image_map = build_image_map(bundle_images_dir)
+    product_image_map = build_image_map(product_images_dir)
 
     product_ids_all = products_df["product_asset_id"].astype(str).tolist()
     product_ids = [pid for pid in product_ids_all if pid in product_image_map]
     if not product_ids:
         raise RuntimeError("No product images found for product ids.")
 
-    device = resolve_device(args.device)
-    model, transform, embedding_dim = build_pretrained_encoder(args.model_name, device=device)
+    device = resolve_device(device_str)
+    model, transform, embedding_dim = build_pretrained_encoder(model_name, device=device)
 
-    print(f"Using model={args.model_name} | device={device} | products={len(product_ids)}")
+    print(f"Using model={model_name} | device={device} | products={len(product_ids)}")
     encoded_product_ids, product_embeddings = encode_assets(
         asset_ids=product_ids,
         image_map=product_image_map,
         model=model,
         transform=transform,
         device=device,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=batch_size,
+        num_workers=num_workers,
         embedding_dim=embedding_dim,
-        use_amp=args.amp,
+        use_amp=use_amp,
     )
     product_ids = encoded_product_ids
     print(f"Encoded product embeddings: {product_embeddings.shape}")
 
     train_bundle_ids = train_df["bundle_asset_id"].astype(str).tolist()
-    val_bundle_ids = split_val_bundles(train_bundle_ids, val_ratio=args.val_ratio, seed=args.seed)
+    val_bundle_ids = split_val_bundles(train_bundle_ids, val_ratio=val_ratio, seed=seed)
     gt_map = build_gt_map(train_df)
 
     val_metrics: Dict[str, float] = {"num_bundles_evaluated": 0.0}
@@ -221,10 +219,10 @@ def main() -> None:
             model=model,
             transform=transform,
             device=device,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
+            batch_size=batch_size,
+            num_workers=num_workers,
             embedding_dim=embedding_dim,
-            use_amp=args.amp,
+            use_amp=use_amp,
         )
         val_predictions = retrieve_topk_product_ids(
             query_embeddings=val_embeddings,
@@ -254,10 +252,10 @@ def main() -> None:
         model=model,
         transform=transform,
         device=device,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=batch_size,
+        num_workers=num_workers,
         embedding_dim=embedding_dim,
-        use_amp=args.amp,
+        use_amp=use_amp,
     )
     test_predictions = retrieve_topk_product_ids(
         query_embeddings=test_embeddings,
@@ -281,23 +279,21 @@ def main() -> None:
             )
 
     submission_df = pd.DataFrame(submission_rows, columns=["bundle_asset_id", "product_asset_id"])
-    ensure_parent(args.submission_out)
-    submission_df.to_csv(args.submission_out, index=False)
+    submission_df.to_csv(submission_out, index=False)
 
     summary = {
-        "model_name": args.model_name,
+        "model_name": model_name,
         "device": str(device),
         "num_products_indexed": int(len(product_ids)),
         "num_test_bundles": int(len(test_bundle_ids)),
         "rows_written_submission": int(len(submission_df)),
         "val_metrics": val_metrics,
     }
-    ensure_parent(args.metrics_out)
-    args.metrics_out.write_text(json.dumps(summary, indent=2))
+    metrics_out.write_text(json.dumps(summary, indent=2))
 
     missing_test_images = len(test_bundle_ids) - len(test_ids_encoded)
-    print(f"Saved submission: {args.submission_out} ({len(submission_df)} rows)")
-    print(f"Saved metrics: {args.metrics_out}")
+    print(f"Saved submission: {submission_out} ({len(submission_df)} rows)")
+    print(f"Saved metrics: {metrics_out}")
     print(f"Missing test bundle images handled with fallback: {missing_test_images}")
 
 

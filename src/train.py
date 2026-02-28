@@ -6,6 +6,7 @@ from pathlib import Path
 
 import hydra
 from hydra.core.config_store import ConfigStore
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import to_absolute_path
 
 from src.config import InditexConfig
@@ -21,12 +22,13 @@ def main(cfg: InditexConfig) -> None:
     """Resolve paths from Hydra and launch selected trainer backend."""
     files = cfg.files
 
-    train_manifest = Path(to_absolute_path(files.train_manifest))
-    val_manifest = Path(to_absolute_path(files.val_manifest))
-    products_manifest = Path(to_absolute_path(files.products_manifest))
+    data_dir = Path(to_absolute_path(files.data_dir))
+    train_manifest = data_dir / "bundles_product_match_train.csv"
+    val_manifest = data_dir / "bundles_product_match_train.csv"
+    products_manifest = data_dir / "product_dataset.csv"
     bundles_images_dir = Path(to_absolute_path(files.bundles_images))
     products_images_dir = Path(to_absolute_path(files.products_images))
-    output_dir = Path(to_absolute_path(files.output_dir))
+    output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
 
     train_retrieval_model(
         cfg=cfg,

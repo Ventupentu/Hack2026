@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-import hydra
-import pandas as pd
-from hydra.utils import to_absolute_path
-from omegaconf import DictConfig
 from tqdm import tqdm
 
 try:
@@ -23,8 +18,6 @@ CONF_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.45
 MAX_BOXES_PER_IMAGE = 15
 MIN_AREA_RATIO = 0.001
-MAX_IMAGES = 10
-OUTPUT_DIR = Path("outputs/yolov8_clothing")
 
 BoxXYXY = Tuple[int, int, int, int]
 ScoredBox = Tuple[int, int, int, int, float]
@@ -156,55 +149,3 @@ def detect_boxes_for_assets(
             continue
         out[asset_id] = detector.detect_boxes_without_scores(image_path)
     return out
-
-
-@hydra.main(version_base=None, config_path="../config", config_name="config")
-def main(cfg: DictConfig) -> None:
-    files_cfg = cfg.get("files", {})
-    detection_cfg = cfg.get("detection", {})
-
-    bundles_csv = Path(to_absolute_path(files_cfg.get("bundles_dataset", "data/bundles_dataset.csv")))
-    bundles_images_dir = Path(to_absolute_path(files_cfg.get("bundles_images", "data/bundle_images")))
-    out_dir = Path(to_absolute_path(files_cfg.get("yolo_detections_dir", str(OUTPUT_DIR))))
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    detector = ClothingYOLODetector(
-        model_id=str(detection_cfg.get("model_id", MODEL_ID)),
-        conf_threshold=float(detection_cfg.get("conf_threshold", CONF_THRESHOLD)),
-        iou_threshold=float(detection_cfg.get("iou_threshold", IOU_THRESHOLD)),
-        max_boxes_per_image=int(detection_cfg.get("max_boxes_per_image", MAX_BOXES_PER_IMAGE)),
-        min_area_ratio=float(detection_cfg.get("min_area_ratio", MIN_AREA_RATIO)),
-    )
-    max_images = int(detection_cfg.get("max_images", MAX_IMAGES))
-
-    bundle_ids = load_bundle_image_ids(bundles_csv, max_images=max_images)
-    print(f"Procesando {len(bundle_ids)} imagenes desde: {bundles_images_dir.resolve()}")
-
-    boxes_json: Dict[str, List[List[float]]] = {}
-    for bundle_id in tqdm(bundle_ids, desc="Detect bundles"):
-        img_path = bundles_images_dir / f"{bundle_id}.jpg"
-        if not img_path.exists():
-            continue
-        scored_boxes = detector.detect_boxes(img_path)
-        boxes_json[bundle_id] = [list(box) for box in scored_boxes]
-
-        if render_result is not None:
-            results = detector.model.predict(
-                str(img_path),
-                conf=detector.conf_threshold,
-                iou=detector.iou_threshold,
-                verbose=False,
-            )
-            if results:
-                render = render_result(model=detector.model, image=str(img_path), result=results[0])
-                render.save(out_dir / f"{bundle_id}.jpg")
-
-    (out_dir / "bundle_boxes.json").write_text(
-        json.dumps(boxes_json, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    print(f"Listo. Resultados en: {out_dir.resolve()}")
-
-
-if __name__ == "__main__":
-    main()
