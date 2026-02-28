@@ -1,0 +1,50 @@
+\section{Implementation Details}
+
+\subsection{Configuration and Entrypoints}
+
+The project uses Hydra~\cite{yadan2019hydra} with typed dataclasses (\texttt{src/config.py}). Main entrypoints are:
+\begin{itemize}
+  \item \texttt{python -m src.train}: OpenCLIP training.
+  \item \texttt{python -m src.infer}: pretrained baseline inference + local validation split.
+  \item \texttt{python -m src.infer\_openclip}: inference from trained OpenCLIP checkpoint.
+\end{itemize}
+
+Core runtime parameters include batch size, epochs, learning rate, AMP, gradient accumulation, recall cutoffs, and optional detection settings (\texttt{bbox\_*}).
+
+\subsection{Code Architecture}
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{p{0.37\linewidth} p{0.55\linewidth}}
+    \toprule
+    \textbf{Module} & \textbf{Responsibility} \\
+    \midrule
+    \texttt{src/train.py} & Hydra bootstrap and trainer dispatch. \\
+    \texttt{src/models/retrieval\_openclip.py} & Main OpenCLIP training/validation loop and checkpointing. \\
+    \texttt{src/infer.py} & Baseline embedding extraction, retrieval, and submission export. \\
+    \texttt{src/infer\_openclip.py} & OpenCLIP checkpoint inference for test bundles. \\
+    \texttt{src/detection.py} & YOLO detector wrapper and box extraction utilities. \\
+    \texttt{src/utils/retrieval.py} & Similarity and top-K retrieval helpers. \\
+    \texttt{src/utils/metrics.py} & Hit@K and Recall@K computation. \\
+    \texttt{preprocess\_data.py} & Dataset integrity checks, split, manifests, and stats. \\
+    \texttt{offline\_augment.py} & Offline augmentation and augmentation manifests. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Primary modules and responsibilities.}
+  \label{tab:code-map}
+\end{table}
+
+\subsection{Training Loop Highlights}
+
+The OpenCLIP training implementation includes:
+\begin{enumerate}
+  \item Dynamic device resolution (CPU/CUDA) and optional multi-GPU DataParallel.
+  \item Cosine learning-rate scheduler with 10\% warmup.
+  \item Optional mixed precision via \texttt{torch.cuda.amp}.
+  \item Periodic logging, per-epoch validation, JSONL metric appends, and checkpointing (\texttt{epoch\_X.pt}, \texttt{best.pt}).
+\end{enumerate}
+
+\subsection{Inference and Fallback Logic}
+
+Both inference scripts generate one row per predicted product and cap outputs to 15 per bundle. If bundle embeddings are unavailable (e.g., missing image), popular products from train links are used as fallback.
