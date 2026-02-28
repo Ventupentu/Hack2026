@@ -14,6 +14,7 @@ class Params:
     seed: int = 42
     num_workers: int = 4
     device: str = "cuda"
+    model_name: str = "openclip_marqo_siglip"
     multi_gpu: bool = True
     gpu_ids: str = "0,1"
     amp: bool = True
