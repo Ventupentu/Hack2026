@@ -27,3 +27,9 @@ params:
   bbox_max_per_image: 15
   bbox_min_area_ratio: 0.001
   bbox_cache_path: ""
+
+detection:
+  max_images: 40000
+  model_id: kesimeg/yolov8n-clothing-detection
+  conf_threshold: 0.25
+  iou_threshold: 0.45
