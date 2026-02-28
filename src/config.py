@@ -52,11 +52,20 @@ class Files:
 
 @dataclass
 class Infer:
-    """Parameters exclusive to the inference/evaluation pipeline."""
+    """Inference parameters."""
 
-    val_ratio: float = MISSING
-    eval_ks: str = MISSING
-    top_n_submit: int = MISSING
+    checkpoint_path: str = ""
+    tta_num_augs: int = 1
+    per_crop_topk: int = 50
+    top_n_submit: int = 15
+    val_ratio: float = 0.1
+    eval_ks: str = "5,10,15"
+    # Gender filtering: discard products whose known gender ≠ bundle section
+    gender_filter: bool = True
+    # Category diversity: max products per product_description category
+    max_per_category: int = 2
+    # Score threshold: discard products below this cosine similarity
+    score_threshold: float = 0.0
 
 
 @dataclass
@@ -66,15 +75,3 @@ class InditexConfig:
     params: Params = field(default_factory=Params)
     files: Files = field(default_factory=Files)
     infer: "Infer" = field(default_factory=lambda: Infer())
-
-
-@dataclass
-class Infer:
-    """Inference parameters."""
-
-    checkpoint_path: str = ""
-    tta_num_augs: int = 1
-    per_crop_topk: int = 50
-    top_n_submit: int = 15
-    val_ratio: float = 0.1
-    eval_ks: str = "5,10,15"
