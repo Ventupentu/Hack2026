@@ -4,9 +4,9 @@ defaults:
   - files: file.yaml
 
 params:
-  batch_size: 64
-  epochs: 20
-  lr: 1e-5
+  batch_size: 32
+  epochs: 40
+  lr: 2e-5
   weight_decay: 1e-4
   seed: 42
   num_workers: 4
@@ -15,7 +15,7 @@ params:
   multi_gpu: false
   gpu_ids: "0"
   amp: true
-  grad_accum: 1
+  grad_accum: 4
   log_every: 50
   save_every: 1
   max_val_k: 200
@@ -27,8 +27,16 @@ params:
   bbox_max_per_image: 15
   bbox_min_area_ratio: 0.001
   bbox_cache_path: ""
+  # Hard negative mining
+  mine_every: 3
+  hard_neg_top_k: 16
+  max_hard_negatives: 2
+  max_positives: 4
 
 infer:
-  val_ratio: 0.2
-  eval_ks: "1,5,10,15"
+  checkpoint_path: ""
+  tta_num_augs: 1
+  per_crop_topk: 150
   top_n_submit: 15
+  val_ratio: 0.1
+  eval_ks: "5,10,15"

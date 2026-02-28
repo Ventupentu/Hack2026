@@ -23,8 +23,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from src.config import InditexConfig
-from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
+from config import InditexConfig
+from detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):

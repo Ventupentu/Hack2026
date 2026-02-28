@@ -9,29 +9,34 @@ from omegaconf import MISSING
 class Params:
     """Training/model parameters."""
 
-    batch_size: int = MISSING
-    epochs: int = MISSING
-    lr: float = MISSING
-    weight_decay: float = MISSING
-    seed: int = MISSING
-    num_workers: int = MISSING
-    device: str = MISSING
-    model_name: str = MISSING
-    multi_gpu: bool = MISSING
-    gpu_ids: str = MISSING
-    amp: bool = MISSING
-    grad_accum: int = MISSING
-    log_every: int = MISSING
-    save_every: int = MISSING
-    max_val_k: int = MISSING
-    recall_k: int = MISSING
-    use_bundle_boxes: bool = MISSING
-    bbox_model_id: str = MISSING
-    bbox_conf_threshold: float = MISSING
-    bbox_iou_threshold: float = MISSING
-    bbox_max_per_image: int = MISSING
-    bbox_min_area_ratio: float = MISSING
-    bbox_cache_path: str = MISSING
+    batch_size: int = 32
+    epochs: int = 5
+    lr: float = 1e-5
+    weight_decay: float = 1e-4
+    seed: int = 42
+    num_workers: int = 4
+    device: str = "cuda"
+    model_name: str = "openclip_marqo_siglip"
+    multi_gpu: bool = False
+    gpu_ids: str = "0,1"
+    amp: bool = True
+    grad_accum: int = 1
+    log_every: int = 50
+    save_every: int = 1
+    max_val_k: int = 200
+    recall_k: int = 15
+    use_bundle_boxes: bool = True
+    bbox_model_id: str = "kesimeg/yolov8n-clothing-detection"
+    bbox_conf_threshold: float = 0.25
+    bbox_iou_threshold: float = 0.45
+    bbox_max_per_image: int = 15
+    bbox_min_area_ratio: float = 0.001
+    bbox_cache_path: str = ""
+    # Hard negative mining
+    mine_every: int = 3
+    hard_neg_top_k: int = 16
+    max_hard_negatives: int = 4
+    max_positives: int = 8
 
 
 @dataclass
@@ -60,4 +65,16 @@ class InditexConfig:
 
     params: Params = field(default_factory=Params)
     files: Files = field(default_factory=Files)
-    infer: Infer = field(default_factory=Infer)
+    infer: "Infer" = field(default_factory=lambda: Infer())
+
+
+@dataclass
+class Infer:
+    """Inference parameters."""
+
+    checkpoint_path: str = ""
+    tta_num_augs: int = 1
+    per_crop_topk: int = 50
+    top_n_submit: int = 15
+    val_ratio: float = 0.1
+    eval_ks: str = "5,10,15"
