@@ -1,18 +1,18 @@
-\section{Introduction}
+\section{Introduccion}
 
-The Hack2026 task is a multi-label visual retrieval problem: given a bundle image (an outfit or set of garments), the system must predict the list of product identifiers (\texttt{product\_asset\_id}) present in that bundle. The final output is a CSV with one row per predicted product, grouped by \texttt{bundle\_asset\_id}, with a maximum of 15 predictions per bundle.
+La tarea Hack2026 es un problema de retrieval visual multietiqueta: dada una imagen de bundle (un look o conjunto de prendas), el sistema debe predecir la lista de identificadores de producto (\texttt{product\_asset\_id}) presentes en ese bundle. La salida final es un CSV con una fila por producto predicho, agrupado por \texttt{bundle\_asset\_id}, con un maximo de 15 predicciones por bundle.
 
-This repository implements two complementary approaches:
+Este repositorio implementa dos enfoques complementarios:
 \begin{enumerate}
-  \item A lightweight pretrained baseline (\texttt{src/infer.py}) based on cosine retrieval over image embeddings from torchvision backbones.
-  \item A trainable multimodal retrieval model (\texttt{src/models/retrieval\_openclip.py}) based on Marqo Fashion SigLIP, with optional bundle-region detection and contrastive optimization.
+  \item Un baseline preentrenado ligero (\texttt{src/infer.py}) basado en retrieval por coseno sobre embeddings de imagen extraidos con backbones de torchvision.
+  \item Un modelo de retrieval multimodal entrenable (\texttt{src/models/retrieval\_openclip.py}) basado en Marqo Fashion SigLIP, con deteccion opcional de regiones en bundles y optimizacion contrastiva.
 \end{enumerate}
 
-From an engineering perspective, the codebase is organized around three stages:
+Desde una perspectiva de ingenieria, el codigo se organiza en tres etapas:
 \begin{enumerate}
-  \item Data curation and asset preparation (\texttt{preprocess\_data.py}, \texttt{download.sh}, \texttt{offline\_augment.py}).
-  \item Training and local validation (\texttt{src/train.py} with Hydra config).
-  \item Test-time inference and submission export (\texttt{src/infer.py}, \texttt{src/infer\_openclip.py}).
+  \item Curacion de datos y preparacion de assets (\texttt{preprocess\_data.py}, \texttt{download.sh}, \texttt{offline\_augment.py}).
+  \item Entrenamiento y validacion local (\texttt{src/train.py} con configuracion Hydra).
+  \item Inferencia en test y exportacion de la entrega (\texttt{src/infer.py}, \texttt{src/infer\_openclip.py}).
 \end{enumerate}
 
-This paper documents the end-to-end pipeline and the practical decisions embedded in the current implementation.
+Este paper documenta el pipeline de extremo a extremo y las decisiones practicas incorporadas en la implementacion actual.

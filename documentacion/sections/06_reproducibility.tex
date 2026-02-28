@@ -1,32 +1,32 @@
-\section{Reproducibility}
+\section{Reproducibilidad}
 
-\subsection{Environment}
+\subsection{Entorno}
 
-Base dependencies are listed in \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, and \texttt{torchvision}. Additional runtime packages required by advanced features are:
+Las dependencias base estan listadas en \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch} y \texttt{torchvision}. Paquetes adicionales requeridos por funciones avanzadas:
 \begin{itemize}
-  \item \texttt{open\_clip\_torch} for the OpenCLIP backend.
-  \item \texttt{ultralyticsplus} for bundle clothing detection.
+  \item \texttt{open\_clip\_torch} para el backend OpenCLIP.
+  \item \texttt{ultralyticsplus} para la deteccion de ropa en bundles.
 \end{itemize}
 
-\subsection{Determinism Controls}
+\subsection{Controles de Determinismo}
 
-The code explicitly sets random seeds (\texttt{random}, \texttt{numpy}, \texttt{torch}). Offline augmentation uses stable hash-based seeds per asset and augmentation index. This enables repeatable preprocessing and consistent training behavior under fixed configuration.
+El codigo fija explicitamente semillas aleatorias (\texttt{random}, \texttt{numpy}, \texttt{torch}). El aumento offline usa semillas estables basadas en hash por asset e indice de aumento. Esto permite preprocesamiento repetible y comportamiento de entrenamiento consistente bajo configuracion fija.
 
-\subsection{Hydra Configuration}
+\subsection{Configuracion Hydra}
 
-Configuration is split into:
+La configuracion se divide en:
 \begin{itemize}
-  \item \texttt{config/config.yaml}: training and inference parameters.
-  \item \texttt{config/files/file.yaml}: dataset/image/cache paths.
+  \item \texttt{config/config.yaml}: parametros de entrenamiento e inferencia.
+  \item \texttt{config/files/file.yaml}: rutas de dataset/imagenes/cache.
 \end{itemize}
 
-Hydra output directories store run-specific artifacts, making experiments traceable without manual path bookkeeping.
+Los directorios de salida de Hydra guardan artefactos especificos de cada ejecucion, haciendo los experimentos trazables sin gestion manual de rutas.
 
-\subsection{Submission Contract}
+\subsection{Contrato de Entrega}
 
-The final CSV must contain:
+El CSV final debe contener:
 \begin{itemize}
   \item \texttt{bundle\_asset\_id}
   \item \texttt{product\_asset\_id}
 \end{itemize}
-with up to 15 rows per bundle, sorted by model confidence.
+con hasta 15 filas por bundle, ordenadas por confianza del modelo.

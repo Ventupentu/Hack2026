@@ -1,10 +1,10 @@
-\section{Limitations and Risks}
+\section{Limitaciones y Riesgos}
 
 \begin{enumerate}
-  \item \textbf{Single-view product supervision:} each product ID is represented by very limited imagery, which can reduce robustness to pose, occlusion, and lighting changes.
-  \item \textbf{Validation manifest default in training entrypoint:} current \texttt{src/train.py} points both train and val manifests to \texttt{bundles\_product\_match\_train.csv}; separate validation manifests should be passed for strict model selection.
-  \item \textbf{Detection dependency:} detection-guided mode depends on external YOLO checkpoints and introduces additional compute overhead.
-  \item \textbf{Submission calibration:} ranking quality matters more than simple top-1 correctness because evaluation keeps up to the first 15 predictions per bundle.
+  \item \textbf{Supervision de producto en vista unica:} cada ID de producto esta representado por imagenes muy limitadas, lo que puede reducir la robustez ante cambios de pose, oclusion e iluminacion.
+  \item \textbf{Manifiesto de validacion por defecto en el entrypoint de entrenamiento:} actualmente \texttt{src/train.py} apunta tanto train como val a \texttt{bundles\_product\_match\_train.csv}; para una seleccion estricta del modelo se deben pasar manifiestos de validacion separados.
+  \item \textbf{Dependencia de deteccion:} el modo guiado por deteccion depende de checkpoints externos de YOLO e introduce sobrecoste computacional adicional.
+  \item \textbf{Calibracion de la entrega:} la calidad del ranking importa mas que la exactitud top-1 simple porque la evaluacion conserva hasta las primeras 15 predicciones por bundle.
 \end{enumerate}
 
-Recommended next improvements are hard-negative mining, ANN indexing (e.g., FAISS), richer text encoding strategies, and stronger reranking layers.
+Las siguientes mejoras recomendadas son hard-negative mining, indexado ANN (por ejemplo, FAISS), estrategias de codificacion de texto mas ricas y capas de reranking mas potentes.

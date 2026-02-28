@@ -1,11 +1,11 @@
-\section*{Appendix: Reproducible Commands}
+\section*{Apendice: Comandos Reproducibles}
 
-\subsection{Data Download}
+\subsection{Descarga de Datos}
 \begin{verbatim}
 bash download.sh
 \end{verbatim}
 
-\subsection{Preprocessing}
+\subsection{Preprocesamiento}
 \begin{verbatim}
 python preprocess_data.py \
   --skip_download \
@@ -14,7 +14,7 @@ python preprocess_data.py \
   --seed 42
 \end{verbatim}
 
-\subsection{Offline Augmentation}
+\subsection{Aumento Offline}
 \begin{verbatim}
 python offline_augment.py \
   --bundles_manifest data/manifests/train_manifest.jsonl \
@@ -28,17 +28,17 @@ python offline_augment.py \
   --workers 8
 \end{verbatim}
 
-\subsection{Training (Hydra)}
+\subsection{Entrenamiento (Hydra)}
 \begin{verbatim}
 python -m src.train
 \end{verbatim}
 
-\subsection{Baseline Inference}
+\subsection{Inferencia Baseline}
 \begin{verbatim}
 python -m src.infer
 \end{verbatim}
 
-\subsection{OpenCLIP Inference}
+\subsection{Inferencia OpenCLIP}
 \begin{verbatim}
 python -m src.infer_openclip \
   --checkpoint outputs/retrieval_openclip/best.pt \
