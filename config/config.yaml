@@ -4,12 +4,12 @@ defaults:
   - files: file.yaml
 
 params:
-  batch_size: 64
+  batch_size: 16
   epochs: 15
   lr: 3e-5
   weight_decay: 1e-4
   seed: 42
-  num_workers: 4
+  num_workers: 16
   device: cuda
   model_name: openclip_marqo_siglip
   grlite_model_name: "srpone/gr-lite"
@@ -18,10 +18,10 @@ params:
   grlite_temperature: 0.07
   grlite_val_ratio: 0.1
   grlite_resume_checkpoint: ""
-  multi_gpu: false
-  gpu_ids: "0"
+  multi_gpu: true
+  gpu_ids: "0,1"
   amp: true
-  grad_accum: 4
+  grad_accum: 8
   log_every: 50
   save_every: 1
   max_val_k: 200
@@ -33,7 +33,19 @@ params:
   bbox_max_per_image: 15
   bbox_min_area_ratio: 0.001
   bbox_cache_path: ""
-  # Hard negative mining
+  # Memory-efficient fine-tuning
+  freeze_backbone: true
+  unfreeze_last_n_blocks: 4
+  proj_hidden_dim: 512
+  # LoRA fine-tuning (overrides freeze_backbone when use_lora=true)
+  use_lora: false
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  # Resume: "auto" = find last.pt automatically, "" = start fresh, or explicit path
+  resume_from: "auto"
+  # Hard negative mining (category-aware batching from product_dataset.csv)
+  use_hard_negatives: true
   mine_every: 3
   hard_neg_top_k: 16
   max_hard_negatives: 2

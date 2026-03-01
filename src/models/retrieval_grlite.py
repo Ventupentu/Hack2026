@@ -1,4 +1,12 @@
-"""GR-Lite retrieval training implementation (bundle -> products)."""
+"""GR-Lite retrieval training implementation (bundle -> products).
+
+Improvements:
+  A) Cross-batch gradient accumulation for InfoNCE – accumulates embeddings
+     across micro-batches so contrastive loss sees BS×grad_accum negatives.
+  B) LoRA via peft – injects low-rank adapters into all attention projections.
+  C) Hard Negative Mining – groups products of the same product_description
+     within each batch so the model must learn fine-grained differences.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +24,7 @@ import torch.nn.functional as F
 from PIL import Image, UnidentifiedImageError
 from torch import nn
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
 from torchvision import transforms
 from tqdm import tqdm
 
@@ -408,6 +416,109 @@ def collate_skip_none(batch: Sequence[Optional[Dict[str, torch.Tensor]]]) -> Opt
     }
 
 
+# ---------------------------------------------------------------------------
+# C) Hard Negative Mining – category-aware batching
+# ---------------------------------------------------------------------------
+
+def load_product_categories(data_dir: Path) -> Dict[str, str]:
+    """Load product_asset_id → product_description from product_dataset.csv."""
+    csv_path = data_dir / "product_dataset.csv"
+    if not csv_path.exists():
+        print(f"Warning: {csv_path} not found – hard-negative mining disabled.")
+        return {}
+    cat_map: Dict[str, str] = {}
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            pid = _as_str(row.get("product_asset_id"))
+            desc = _as_str(row.get("product_description"))
+            if pid and desc:
+                cat_map[pid] = desc
+    print(f"Loaded {len(cat_map)} product categories ({len(set(cat_map.values()))} unique descriptions).")
+    return cat_map
+
+
+class CategoryBatchSampler(BatchSampler):
+    """Yields batches where products share the same product_description.
+
+    For each batch: pick a category → sample up to *batch_size* pairs from that
+    category.  If a category has fewer pairs than batch_size, top up with
+    repetition from the same category.
+    Categories with <2 pairs fall back to a mixed bucket.
+
+    Used as ``batch_sampler=`` in DataLoader (yields ``List[int]`` per batch).
+    """
+
+    def __init__(
+        self,
+        pairs: Sequence[Pair],
+        product_categories: Dict[str, str],
+        batch_size: int,
+        seed: int = 42,
+    ) -> None:
+        # We don't call super().__init__ because we manage everything ourselves.
+        self.batch_size = batch_size
+        self.rng = random.Random(seed)
+
+        # Group pair indices by product category
+        self.cat_to_indices: Dict[str, List[int]] = defaultdict(list)
+        for i, (_, pid) in enumerate(pairs):
+            cat = product_categories.get(pid, "__other__")
+            self.cat_to_indices[cat].append(i)
+
+        # Categories with enough pairs (>=2) for meaningful hard-negatives
+        self.categories = [c for c, idxs in self.cat_to_indices.items() if len(idxs) >= 2]
+        # Singletons → mixed pool
+        other_idxs: List[int] = []
+        for c, idxs in self.cat_to_indices.items():
+            if len(idxs) < 2:
+                other_idxs.extend(idxs)
+        if other_idxs:
+            self.cat_to_indices["__mixed__"] = other_idxs
+            if "__mixed__" not in self.categories:
+                self.categories.append("__mixed__")
+
+        self._total_pairs = len(pairs)
+        self._num_batches = max(1, (self._total_pairs + batch_size - 1) // batch_size)
+        print(
+            f"CategoryBatchSampler: {len(self.categories)} categories, "
+            f"{self._total_pairs} total pairs, batch_size={batch_size}, "
+            f"~{self._num_batches} batches/epoch"
+        )
+
+    def __iter__(self):
+        cats = list(self.categories)
+        self.rng.shuffle(cats)
+        cat_pools: Dict[str, List[int]] = {}
+        for c in cats:
+            pool = list(self.cat_to_indices[c])
+            self.rng.shuffle(pool)
+            cat_pools[c] = pool
+
+        yielded = 0
+        cat_idx = 0
+        while yielded < self._total_pairs:
+            cat = cats[cat_idx % len(cats)]
+            pool = cat_pools[cat]
+            if not pool:
+                pool = list(self.cat_to_indices[cat])
+                self.rng.shuffle(pool)
+                cat_pools[cat] = pool
+            take = min(self.batch_size, len(pool))
+            batch = pool[:take]
+            cat_pools[cat] = pool[take:]
+            # Pad to batch_size from same category if needed & enough remain
+            while len(batch) < self.batch_size and (self._total_pairs - yielded) >= self.batch_size:
+                refill = list(self.cat_to_indices[cat])
+                self.rng.shuffle(refill)
+                batch.extend(refill[: self.batch_size - len(batch)])
+            yield batch  # ← yield a List[int] (one complete batch)
+            yielded += len(batch)
+            cat_idx += 1
+
+    def __len__(self) -> int:
+        return self._num_batches
+
+
 def _extract_features_from_outputs(outputs: Any) -> torch.Tensor:
     """Convert different model output shapes to [B, D] feature tensor."""
     if isinstance(outputs, torch.Tensor):
@@ -437,12 +548,143 @@ def _extract_features_from_outputs(outputs: Any) -> torch.Tensor:
     return features
 
 
+class ProjectionHead(nn.Module):
+    """Lightweight MLP projection on top of frozen backbone features."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 512, output_dim: Optional[int] = None) -> None:
+        super().__init__()
+        output_dim = output_dim or input_dim
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def _find_backbone_blocks(base_model: nn.Module) -> Optional[nn.ModuleList]:
+    """Walk common attribute paths to find the list of transformer blocks.
+
+    GR-Lite models can be:
+    - transformers AutoModel  → model.encoder.layer  /  model.layers
+    - EomtDinov3ForUniversalSegmentation → model.layers  /  layers
+    - A raw nn.Module with .blocks / .layers
+    """
+    candidates: List[str] = []
+    # Build a list of dotted-path candidates to try
+    for prefix in ("", "model.", "model.model.", "base_model.", "base_model.model."):
+        for attr in ("encoder.layer", "encoder.layers", "layers", "blocks"):
+            candidates.append(prefix + attr)
+
+    for dotted in candidates:
+        obj = base_model
+        try:
+            for part in dotted.split("."):
+                if not part:
+                    continue
+                obj = getattr(obj, part)
+            if isinstance(obj, (nn.ModuleList, nn.Sequential)) and len(obj) > 0:
+                return obj
+        except AttributeError:
+            continue
+    return None
+
+
+def freeze_grlite_backbone(
+    base_model: nn.Module,
+    unfreeze_last_n_blocks: int = 0,
+) -> Tuple[int, int]:
+    """Freeze all backbone params, then unfreeze last N transformer blocks + final norms.
+
+    Returns (frozen_count, trainable_count) as *number of parameter tensors*.
+    """
+    # 1) Freeze everything
+    for param in base_model.parameters():
+        param.requires_grad = False
+
+    if unfreeze_last_n_blocks <= 0:
+        frozen = sum(1 for p in base_model.parameters())
+        return frozen, 0
+
+    # 2) Find transformer blocks
+    blocks = _find_backbone_blocks(base_model)
+    if blocks is None:
+        print("Warning: could not locate transformer blocks in GR-Lite – nothing unfrozen.")
+        frozen = sum(1 for p in base_model.parameters())
+        return frozen, 0
+
+    n_blocks = len(blocks)
+    unfreeze_n = min(unfreeze_last_n_blocks, n_blocks)
+
+    for block in blocks[-unfreeze_n:]:
+        for param in block.parameters():
+            param.requires_grad = True
+
+    # 3) Unfreeze final norms / heads that come after blocks
+    for name, module in base_model.named_modules():
+        lower = name.lower().split(".")[-1] if name else ""
+        if lower in ("layernorm", "ln_post", "ln_final", "norm", "head", "fc_norm"):
+            for param in module.parameters():
+                param.requires_grad = True
+
+    frozen = sum(1 for p in base_model.parameters() if not p.requires_grad)
+    trainable = sum(1 for p in base_model.parameters() if p.requires_grad)
+    print(
+        f"GR-Lite backbone: froze {frozen} params, unfroze last "
+        f"{unfreeze_n}/{n_blocks} blocks → {trainable} trainable param tensors"
+    )
+    return frozen, trainable
+
+
+# ---------------------------------------------------------------------------
+# B) LoRA via peft – inject low-rank adapters into attention layers
+# ---------------------------------------------------------------------------
+
+def apply_lora_to_model(
+    base_model: nn.Module,
+    r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    target_modules: Optional[List[str]] = None,
+) -> nn.Module:
+    """Wrap *base_model* with LoRA adapters on attention projections.
+
+    All original params are frozen; only the LoRA deltas (~1 % of params) train.
+    Returns the peft-wrapped model (forward signature unchanged).
+    """
+    from peft import LoraConfig, get_peft_model
+
+    if target_modules is None:
+        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+
+    lora_cfg = LoraConfig(
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+        bias="none",
+    )
+    peft_model = get_peft_model(base_model, lora_cfg)
+
+    trainable = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in peft_model.parameters())
+    print(
+        f"LoRA applied | r={r} alpha={lora_alpha} targets={target_modules}\n"
+        f"  Trainable: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)"
+    )
+    return peft_model
+
+
 class GRLiteTensorEncoder(nn.Module):
     """Tensor-only GR-Lite wrapper suitable for DataParallel."""
 
-    def __init__(self, base_model: nn.Module) -> None:
+    def __init__(self, base_model: nn.Module, proj_head: Optional[nn.Module] = None) -> None:
         super().__init__()
         self.base_model = base_model
+        self.proj_head = proj_head
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         try:
@@ -452,7 +694,10 @@ class GRLiteTensorEncoder(nn.Module):
                 outputs = self.base_model.model(images)
             else:
                 raise
-        return _extract_features_from_outputs(outputs)
+        feats = _extract_features_from_outputs(outputs)
+        if self.proj_head is not None:
+            feats = self.proj_head(feats)
+        return feats
 
 
 def get_core_model(model: nn.Module) -> nn.Module:
@@ -479,6 +724,31 @@ def batch_infonce_loss(
     query_embs = encode_images(model, bundle_imgs)
     product_embs = encode_images(model, product_imgs)
     logits = (query_embs @ product_embs.T) / temperature
+    labels = torch.arange(logits.size(0), device=logits.device)
+    loss_q = F.cross_entropy(logits, labels)
+    loss_p = F.cross_entropy(logits.T, labels)
+    return 0.5 * (loss_q + loss_p)
+
+
+# ---------------------------------------------------------------------------
+# A) Cross-batch InfoNCE – accumulate embeddings for virtual large batch
+# ---------------------------------------------------------------------------
+
+def cross_batch_infonce_loss(
+    all_query_embs: torch.Tensor,
+    all_product_embs: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Symmetric InfoNCE over pre-accumulated embeddings from multiple micro-batches.
+
+    Args:
+        all_query_embs:   [N, D] normalized bundle embeddings (N = BS * grad_accum)
+        all_product_embs: [N, D] normalized product embeddings
+        temperature: softmax temperature
+
+    The positives are on the diagonal (index i ↔ i).
+    """
+    logits = (all_query_embs @ all_product_embs.T) / temperature  # [N, N]
     labels = torch.arange(logits.size(0), device=logits.device)
     loss_q = F.cross_entropy(logits, labels)
     loss_p = F.cross_entropy(logits.T, labels)
@@ -517,6 +787,112 @@ def evaluate_loss(
     if total_batches == 0:
         return float("nan")
     return total_loss / total_batches
+
+
+@torch.inference_mode()
+def compute_recall_at_15(
+    model: nn.Module,
+    val_pairs: Sequence[Pair],
+    bundle_image_map: Dict[str, Path],
+    product_image_map: Dict[str, Path],
+    preprocess: Any,
+    device: torch.device,
+    amp: bool,
+    batch_size: int,
+    num_workers: int,
+) -> float:
+    """Recall@15 over val pairs: encode unique bundles & products, rank by cosine sim.
+
+    Uses a DataLoader with multiple workers for fast parallel image loading.
+    """
+    if not val_pairs:
+        return float("nan")
+    model.eval()
+    amp_on = amp and device.type == "cuda"
+
+    gt: Dict[str, Set[str]] = defaultdict(set)
+    for bid, pid in val_pairs:
+        gt[bid].add(pid)
+
+    # --- fast batch encoder using DataLoader with workers ---
+    class _IdImageDataset(Dataset):
+        def __init__(self, ids: List[str], img_map: Dict[str, Path], tfm: Any):
+            self.ids = ids
+            self.img_map = img_map
+            self.tfm = tfm
+
+        def __len__(self) -> int:
+            return len(self.ids)
+
+        def __getitem__(self, idx: int) -> Tuple[int, Optional[torch.Tensor]]:
+            aid = self.ids[idx]
+            img = open_image_safe(self.img_map[aid])
+            if img is None:
+                return idx, None
+            return idx, self.tfm(img)
+
+    def _collate_id(batch):
+        idxs, tensors = [], []
+        for i, t in batch:
+            if t is not None:
+                idxs.append(i)
+                tensors.append(t)
+        if not tensors:
+            return None
+        return idxs, torch.stack(tensors)
+
+    def _encode_ids(ids: List[str], img_map: Dict[str, Path]) -> Tuple[List[str], torch.Tensor]:
+        ds = _IdImageDataset(ids, img_map, preprocess)
+        loader = DataLoader(
+            ds,
+            batch_size=batch_size * 2,  # inference only → can use larger BS
+            shuffle=False,
+            num_workers=min(num_workers, 8),
+            pin_memory=(device.type == "cuda"),
+            collate_fn=_collate_id,
+        )
+        all_embs = torch.zeros(len(ids), 0)  # placeholder
+        emb_list: List[Tuple[int, torch.Tensor]] = []
+        for batch_data in loader:
+            if batch_data is None:
+                continue
+            idxs, imgs_t = batch_data
+            imgs_t = imgs_t.to(device, non_blocking=True)
+            with torch.autocast(device_type=device.type, enabled=amp_on):
+                out = model(imgs_t)
+                feats = _extract_features_from_outputs(out).float()
+                feats = F.normalize(feats, p=2, dim=1).cpu()
+            for j, orig_idx in enumerate(idxs):
+                emb_list.append((orig_idx, feats[j]))
+        if not emb_list:
+            return [], torch.empty(0)
+        # Sort by original index to preserve ordering
+        emb_list.sort(key=lambda x: x[0])
+        valid_ids = [ids[i] for i, _ in emb_list]
+        embs = torch.stack([e for _, e in emb_list])
+        return valid_ids, embs
+
+    bundle_ids, bundle_embs = _encode_ids(sorted(gt.keys()), bundle_image_map)
+    product_list = sorted({pid for _, pid in val_pairs})
+    product_ids, product_embs = _encode_ids(product_list, product_image_map)
+
+    if not bundle_ids or not product_ids:
+        return float("nan")
+
+    # Vectorized recall computation
+    # sims: [num_bundles, num_products]
+    sims = bundle_embs @ product_embs.T
+    top15_indices = sims.topk(min(15, len(product_ids)), dim=1).indices  # [num_bundles, 15]
+
+    recall_sum, n = 0.0, 0
+    for i, bid in enumerate(bundle_ids):
+        gt_pids = gt.get(bid, set())
+        if not gt_pids:
+            continue
+        hits = sum(1 for idx in top15_indices[i].tolist() if product_ids[idx] in gt_pids)
+        recall_sum += hits / len(gt_pids)
+        n += 1
+    return recall_sum / n if n else float("nan")
 
 
 def save_checkpoint(
@@ -565,7 +941,17 @@ def train_grlite_retrieval(
     output_dir: Path,
     cache_dir: Path,
 ) -> None:
-    """Train/fine-tune GR-Lite on bundle-product positives."""
+    """Train/fine-tune GR-Lite on bundle-product positives.
+
+    Improvements integrated:
+      A) Cross-batch InfoNCE – embeddings from grad_accum micro-batches are
+         accumulated so the contrastive loss sees BS*grad_accum negatives.
+      B) LoRA – when params.use_lora=True, peft LoRA adapters are injected
+         into backbone attention layers instead of freeze+unfreeze.
+      C) Hard-negative mining – when params.use_hard_negatives=True, a
+         CategoryBatchSampler groups same-product_description pairs in each
+         batch (requires data/product_dataset.csv).
+    """
     del products_manifest, cache_dir
 
     params = cfg.params
@@ -581,6 +967,8 @@ def train_grlite_retrieval(
     temperature = float(getattr(params, "grlite_temperature", 0.07))
     split_val_ratio = float(getattr(params, "grlite_val_ratio", 0.1))
     resume_checkpoint = str(getattr(params, "grlite_resume_checkpoint", "")).strip()
+    use_lora = bool(getattr(params, "use_lora", False))
+    use_hard_negatives = bool(getattr(params, "use_hard_negatives", False))
 
     if input_size <= 0:
         raise ValueError("params.grlite_input_size must be > 0")
@@ -591,7 +979,87 @@ def train_grlite_retrieval(
 
     print(f"Loading GR-Lite model from: {model_name}")
     base_model = load_grlite_base_model(model_name=model_name, device=device, input_size=input_size)
-    model: nn.Module = GRLiteTensorEncoder(base_model).to(device)
+
+    # Enable gradient checkpointing at model level (best-effort)
+    _gc_enabled = False
+    if hasattr(base_model, "gradient_checkpointing_enable"):
+        try:
+            base_model.gradient_checkpointing_enable()
+            _gc_enabled = True
+            print("Enabled HF gradient checkpointing on GR-Lite backbone.")
+        except (ValueError, NotImplementedError) as exc:
+            print(f"Model does not support gradient_checkpointing_enable ({exc}). Skipping.")
+    if not _gc_enabled and hasattr(base_model, "set_grad_checkpointing"):
+        try:
+            base_model.set_grad_checkpointing(True)
+            _gc_enabled = True
+            print("Enabled grad checkpointing via set_grad_checkpointing.")
+        except (ValueError, NotImplementedError) as exc:
+            print(f"set_grad_checkpointing also failed ({exc}). Continuing without gradient checkpointing.")
+
+    # ---------- Fine-tuning strategy ----------
+    freeze_backbone = bool(getattr(params, "freeze_backbone", True))
+    unfreeze_last_n = int(getattr(params, "unfreeze_last_n_blocks", 2))
+    proj_hidden_dim = int(getattr(params, "proj_hidden_dim", 512))
+
+    # Determine embedding dimension from a dummy forward
+    base_model.eval()
+    with torch.no_grad():
+        dummy = torch.zeros(1, 3, input_size, input_size, device=device)
+        try:
+            dummy_out = base_model(dummy)
+        except Exception:
+            if hasattr(base_model, "model"):
+                dummy_out = base_model.model(dummy)
+            else:
+                raise
+        emb_dim = _extract_features_from_outputs(dummy_out).shape[-1]
+    base_model.train()
+
+    proj_head: Optional[nn.Module] = None
+
+    if use_lora:
+        # B) LoRA: inject adapters – all original params frozen, LoRA deltas trainable
+        lora_r = int(getattr(params, "lora_r", 16))
+        lora_alpha = int(getattr(params, "lora_alpha", 32))
+        lora_dropout = float(getattr(params, "lora_dropout", 0.05))
+        base_model = apply_lora_to_model(
+            base_model,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+        )
+        # Still add a projection head on top of LoRA-adapted features
+        proj_head = ProjectionHead(input_dim=emb_dim, hidden_dim=proj_hidden_dim, output_dim=emb_dim).to(device)
+        total_trainable = (
+            sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+            + sum(p.numel() for p in proj_head.parameters())
+        )
+        total_all = (
+            sum(p.numel() for p in base_model.parameters())
+            + sum(p.numel() for p in proj_head.parameters())
+        )
+        print(f"LoRA + proj_head dim={emb_dim}→{proj_hidden_dim}→{emb_dim}")
+        print(f"Trainable parameters: {total_trainable:,} / {total_all:,} ({100*total_trainable/total_all:.1f}%)")
+    elif freeze_backbone:
+        # Original freeze strategy
+        frozen_count, trainable_count = freeze_grlite_backbone(base_model, unfreeze_last_n_blocks=unfreeze_last_n)
+        proj_head = ProjectionHead(input_dim=emb_dim, hidden_dim=proj_hidden_dim, output_dim=emb_dim).to(device)
+        total_trainable = (
+            sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+            + sum(p.numel() for p in proj_head.parameters())
+        )
+        total_all = (
+            sum(p.numel() for p in base_model.parameters())
+            + sum(p.numel() for p in proj_head.parameters())
+        )
+        print(f"Freeze backbone: ON | proj_head dim={emb_dim}→{proj_hidden_dim}→{emb_dim}")
+        print(f"Trainable parameters: {total_trainable:,} / {total_all:,} ({100*total_trainable/total_all:.1f}%)")
+    else:
+        total_all = sum(p.numel() for p in base_model.parameters())
+        print(f"Freeze backbone: OFF | full fine-tuning ({total_all:,} params)")
+
+    model: nn.Module = GRLiteTensorEncoder(base_model, proj_head=proj_head).to(device)
     used_gpu_ids: List[int] = []
     if device.type == "cuda" and params.multi_gpu and torch.cuda.device_count() > 1:
         candidate_ids = parse_gpu_ids(params.gpu_ids)
@@ -640,14 +1108,34 @@ def train_grlite_retrieval(
         product_image_map=product_image_map,
         transform=preprocess,
     )
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=int(params.batch_size),
-        shuffle=True,
-        num_workers=int(params.num_workers),
-        pin_memory=(device.type == "cuda"),
-        collate_fn=collate_skip_none,
-    )
+
+    # ---------- C) Hard-negative DataLoader ----------
+    if use_hard_negatives:
+        data_dir = Path(cfg.files.data_dir) if hasattr(cfg.files, "data_dir") else bundles_images_dir.parent
+        product_categories = load_product_categories(data_dir)
+        cat_sampler = CategoryBatchSampler(
+            pairs=train_pairs,
+            product_categories=product_categories,
+            batch_size=int(params.batch_size),
+            seed=int(params.seed),
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=cat_sampler,
+            num_workers=int(params.num_workers),
+            pin_memory=(device.type == "cuda"),
+            collate_fn=collate_skip_none,
+        )
+        print("Hard-negative mining: ON (CategoryBatchSampler)")
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=int(params.batch_size),
+            shuffle=True,
+            num_workers=int(params.num_workers),
+            pin_memory=(device.type == "cuda"),
+            collate_fn=collate_skip_none,
+        )
 
     val_loader: Optional[DataLoader] = None
     if val_pairs:
@@ -673,13 +1161,20 @@ def train_grlite_retrieval(
     )
     print(f"Device: {device} | AMP: {amp_enabled} | multi_gpu={len(used_gpu_ids) >= 2}")
 
+    # Only optimise parameters that require gradients
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    print(
+        f"Optimizer will update {len(trainable_params)} parameter tensors "
+        f"({sum(p.numel() for p in trainable_params):,} scalars)"
+    )
     optimizer = AdamW(
-        core_model.parameters(),
+        trainable_params,
         lr=float(params.lr),
         weight_decay=float(params.weight_decay),
     )
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     best_val_loss = float("inf")
+    best_recall_at_15 = 0.0
     history: List[Dict[str, Any]] = []
     ensure_dir(output_dir)
 
@@ -719,12 +1214,34 @@ def train_grlite_retrieval(
             f"missing={len(missing)} unexpected={len(unexpected)}"
         )
 
+    # Free VRAM before training loop
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    # ----------------------------------------------------------------
+    # A) Cross-batch InfoNCE: accumulate embeddings across micro-batches
+    # ----------------------------------------------------------------
+    use_cross_batch = grad_accum > 1
+    if use_cross_batch:
+        print(
+            f"Cross-batch InfoNCE: ON | grad_accum={grad_accum} → "
+            f"virtual batch = {int(params.batch_size)} × {grad_accum} = "
+            f"{int(params.batch_size) * grad_accum} negatives"
+        )
+    else:
+        print("Cross-batch InfoNCE: OFF (grad_accum=1, standard per-batch loss)")
+
     for epoch in range(start_epoch, total_epochs + 1):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         start = time.time()
         running_loss = 0.0
         num_batches = 0
+
+        # Embedding accumulators for cross-batch InfoNCE (memory-efficient)
+        accum_query: List[torch.Tensor] = []
+        accum_product: List[torch.Tensor] = []
+        accum_step = 0  # counts micro-batches in current accumulation window
 
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{total_epochs}", leave=False)
         for step, batch in enumerate(progress, start=1):
@@ -734,26 +1251,61 @@ def train_grlite_retrieval(
             bundle_imgs = batch["bundle"].to(device, non_blocking=True)
             product_imgs = batch["product"].to(device, non_blocking=True)
 
-            with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                loss = batch_infonce_loss(
-                    model=model,
-                    bundle_imgs=bundle_imgs,
-                    product_imgs=product_imgs,
-                    temperature=temperature,
-                )
-                loss = loss / grad_accum
+            if use_cross_batch:
+                accum_step += 1
+                is_last_accum = (accum_step == grad_accum) or (step == len(train_loader))
 
-            scaler.scale(loss).backward()
+                if not is_last_accum:
+                    # Intermediate micro-batch: encode WITHOUT grad → no graph retained
+                    with torch.no_grad(), torch.autocast(device_type=device.type, enabled=amp_enabled):
+                        q_emb = encode_images(model, bundle_imgs)  # [B, D] detached
+                        p_emb = encode_images(model, product_imgs)
+                    accum_query.append(q_emb)
+                    accum_product.append(p_emb)
+                else:
+                    # Last micro-batch: encode WITH grad
+                    with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                        q_emb = encode_images(model, bundle_imgs)  # [B, D] with grad
+                        p_emb = encode_images(model, product_imgs)
 
-            do_update = (step % grad_accum == 0) or (step == len(train_loader))
-            if do_update:
+                    # Build full virtual batch: detached history + current (with grad)
+                    if accum_query:
+                        all_q = torch.cat(accum_query + [q_emb], dim=0)  # [N, D]
+                        all_p = torch.cat(accum_product + [p_emb], dim=0)
+                    else:
+                        all_q, all_p = q_emb, p_emb
+
+                    with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                        loss = cross_batch_infonce_loss(all_q, all_p, temperature)
+
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    batch_loss = float(loss.item())
+                    running_loss += batch_loss
+                    num_batches += 1
+                    accum_query.clear()
+                    accum_product.clear()
+                    accum_step = 0
+            else:
+                # Standard per-batch InfoNCE (grad_accum=1)
+                with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                    loss = batch_infonce_loss(
+                        model=model,
+                        bundle_imgs=bundle_imgs,
+                        product_imgs=product_imgs,
+                        temperature=temperature,
+                    )
+                scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
 
-            batch_loss = float(loss.item() * grad_accum)
-            running_loss += batch_loss
-            num_batches += 1
+                batch_loss = float(loss.item())
+                running_loss += batch_loss
+                num_batches += 1
 
             if step % log_every == 0:
                 progress.set_postfix(loss=f"{running_loss / max(1, num_batches):.4f}")
@@ -761,20 +1313,32 @@ def train_grlite_retrieval(
         train_loss = running_loss / max(1, num_batches)
 
         val_loss = float("nan")
+        val_recall = float("nan")
         if val_loader is not None:
-            val_loss = evaluate_loss(
+            # Skip evaluate_loss (redundant – recall@15 is the primary metric
+            # and encoding images twice doubles validation time)
+            val_recall = compute_recall_at_15(
                 model=model,
-                loader=val_loader,
+                val_pairs=val_pairs,
+                bundle_image_map=bundle_image_map,
+                product_image_map=product_image_map,
+                preprocess=preprocess,
                 device=device,
                 amp=amp_enabled,
-                temperature=temperature,
+                batch_size=int(params.batch_size),
+                num_workers=int(params.num_workers),
             )
+
+        # Free validation tensors from VRAM
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
         elapsed = time.time() - start
         row = {
             "epoch": epoch,
             "train_loss": float(train_loss),
             "val_loss": float(val_loss),
+            "recall@15": float(val_recall),
             "lr": float(optimizer.param_groups[0]["lr"]),
             "time_sec": float(elapsed),
         }
@@ -783,6 +1347,7 @@ def train_grlite_retrieval(
             f"Epoch {epoch}/{total_epochs} | "
             f"train_loss={train_loss:.6f} "
             f"val_loss={val_loss:.6f} "
+            f"recall@15={val_recall:.4f} "
             f"time={elapsed:.1f}s"
         )
 
@@ -800,8 +1365,9 @@ def train_grlite_retrieval(
                 temperature=temperature,
             )
 
-        if val_loader is not None and np.isfinite(val_loss) and val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_loader is not None and np.isfinite(val_recall) and val_recall > best_recall_at_15:
+            best_recall_at_15 = val_recall
+            print(f"  ↑ New best recall@15={val_recall:.4f} — saving best.pt")
             save_checkpoint(
                 path=output_dir / "best.pt",
                 model=core_model,

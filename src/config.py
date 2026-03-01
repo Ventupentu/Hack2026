@@ -38,7 +38,19 @@ class Params:
     bbox_max_per_image: int = 15
     bbox_min_area_ratio: float = 0.001
     bbox_cache_path: str = ""
+    # Memory-efficient fine-tuning
+    freeze_backbone: bool = True
+    unfreeze_last_n_blocks: int = 2
+    proj_hidden_dim: int = 512
+    # LoRA fine-tuning (overrides freeze_backbone when use_lora=True)
+    use_lora: bool = False
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    # Resume training from checkpoint ("auto" = find last.pt, path = specific, "" = from scratch)
+    resume_from: str = "auto"
     # Hard negative mining
+    use_hard_negatives: bool = False
     mine_every: int = 3
     hard_neg_top_k: int = 16
     max_hard_negatives: int = 4

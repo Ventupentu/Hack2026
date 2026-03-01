@@ -31,10 +31,14 @@ def main(cfg: InditexConfig) -> None:
     yolo_detections_dir = Path(to_absolute_path(files.yolo_detections_dir))
     model_name = str(getattr(cfg.params, "model_name", "openclip_marqo_siglip")).strip()
     if model_name == "openclip_marqo_siglip":
-        output_dir = Path(HydraConfig.get().runtime.output_dir) / "retrieval_openclip"
+        model_slug = "retrieval_openclip"
     else:
-        model_slug = model_name.replace("-", "_")
-        output_dir = Path(HydraConfig.get().runtime.output_dir) / f"retrieval_{model_slug}"
+        model_slug = f"retrieval_{model_name.replace('-', '_')}"
+
+    # Per-run output dir (logs, metrics for this run)
+    output_dir = Path(HydraConfig.get().runtime.output_dir) / model_slug
+    # Persistent checkpoint dir (shared across runs, enables resume)
+    checkpoint_dir = Path(to_absolute_path(f"outputs/{model_slug}"))
 
     train_retrieval_model(
         cfg=cfg,
@@ -45,6 +49,7 @@ def main(cfg: InditexConfig) -> None:
         products_images_dir=products_images_dir,
         output_dir=output_dir,
         cache_dir=yolo_detections_dir,
+        checkpoint_dir=checkpoint_dir,
     )
 
 
