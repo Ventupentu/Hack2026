@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import hydra
-import hydra
 import numpy as np
 import open_clip
 import pandas as pd
@@ -85,7 +84,6 @@ def parse_ks(text: str) -> List[int]:
             continue
         values.append(int(token))
     if not values:
-        raise ValueError("infer.eval_ks must contain at least one positive integer.")
         raise ValueError("infer.eval_ks must contain at least one positive integer.")
     return sorted(set(values))
 
@@ -368,6 +366,101 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+_GENDER_UNKNOWN = 0  # section id for unknown / unisex
+
+
+def load_bundle_genders(bundles_df: pd.DataFrame) -> Dict[str, int]:
+    """Return bundle_id -> section (int) from bundles dataframe."""
+    out: Dict[str, int] = {}
+    for row in bundles_df.itertuples(index=False):
+        bid = str(row.bundle_asset_id)
+        section = row.bundle_id_section
+        if not pd.isna(section):
+            out[bid] = int(section)
+    return out
+
+
+def load_product_genders(products_gender_csv: Path) -> Dict[str, int]:
+    """Return product_id -> gender (int) from product_dataset_with_gender.csv."""
+    if not products_gender_csv.exists():
+        return {}
+    df = pd.read_csv(products_gender_csv)
+    if "gender" not in df.columns:
+        return {}
+    out: Dict[str, int] = {}
+    for row in df.itertuples(index=False):
+        pid = str(row.product_asset_id)
+        gender = row.gender
+        out[pid] = int(gender) if not pd.isna(gender) else _GENDER_UNKNOWN
+    return out
+
+
+def load_product_categories(products_csv: Path) -> Dict[str, str]:
+    """Return product_id -> product_description (category) from product CSV."""
+    df = pd.read_csv(products_csv)
+    out: Dict[str, str] = {}
+    for row in df.itertuples(index=False):
+        pid = str(row.product_asset_id)
+        desc = str(row.product_description) if not pd.isna(row.product_description) else ""
+        out[pid] = desc.strip().upper()
+    return out
+
+
+def filter_cross_gender(
+    scored_products: List[Tuple[str, float]],
+    bundle_gender: int,
+    product_to_gender: Dict[str, int],
+) -> List[Tuple[str, float]]:
+    """Remove products whose *known* gender differs from the bundle's known gender.
+
+    - If the bundle gender is unknown (0) → no filtering.
+    - Products with unknown gender (0) → always kept (could be same gender).
+    - Products with same gender → kept.
+    - Products with different known gender → dropped.
+    """
+    if bundle_gender == _GENDER_UNKNOWN:
+        return scored_products
+    return [
+        (pid, score)
+        for pid, score in scored_products
+        if product_to_gender.get(pid, _GENDER_UNKNOWN) in (_GENDER_UNKNOWN, bundle_gender)
+    ]
+
+
+def deduplicate_by_category(
+    scored_products: List[Tuple[str, float]],
+    product_to_category: Dict[str, str],
+    max_per_category: int,
+) -> List[Tuple[str, float]]:
+    """Keep at most ``max_per_category`` products per product_description.
+
+    Input must be sorted by score descending.  Products with empty/unknown
+    category are always kept (no limit).
+    """
+    if max_per_category <= 0:
+        return scored_products
+    category_counts: Dict[str, int] = defaultdict(int)
+    result: List[Tuple[str, float]] = []
+    for pid, score in scored_products:
+        cat = product_to_category.get(pid, "")
+        if cat and category_counts[cat] >= max_per_category:
+            continue
+        if cat:
+            category_counts[cat] += 1
+        result.append((pid, score))
+    return result
+
+
+def apply_score_threshold(
+    scored_products: List[Tuple[str, float]],
+    threshold: float,
+) -> List[Tuple[str, float]]:
+    """Drop products below a cosine similarity threshold."""
+    if threshold <= 0.0:
+        return scored_products
+    return [(pid, score) for pid, score in scored_products if score >= threshold]
 
 
 def resolve_device(device_name: str) -> torch.device:
@@ -836,6 +929,12 @@ def predict_bundle_topk(
     box_padding: float,
     final_k: int,
     fallback_products: Sequence[str],
+    bundle_to_gender: Optional[Dict[str, int]] = None,
+    product_to_gender: Optional[Dict[str, int]] = None,
+    product_to_category: Optional[Dict[str, str]] = None,
+    gender_filter: bool = True,
+    max_per_category: int = 2,
+    score_threshold: float = 0.0,
 ) -> List[str]:
     image_path = bundle_image_map.get(bundle_id)
     if image_path is None:
@@ -881,18 +980,24 @@ def predict_bundle_topk(
             if product_id not in fused_scores or score > fused_scores[product_id]:
                 fused_scores[product_id] = score
 
+    # Sort by score descending — this ordering is reused by all post-processing
     ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # 1) Score threshold: drop low-confidence results
+    ranked = apply_score_threshold(ranked, score_threshold)
+
+    # 2) Gender filter: discard products with a different *known* gender
+    if gender_filter and bundle_to_gender and product_to_gender:
+        bundle_gender = bundle_to_gender.get(bundle_id, _GENDER_UNKNOWN)
+        ranked = filter_cross_gender(ranked, bundle_gender, product_to_gender)
+
+    # 3) Category diversity: max N products per description category
+    if max_per_category > 0 and product_to_category:
+        ranked = deduplicate_by_category(ranked, product_to_category, max_per_category)
+
+    # Take top final_k (may be less than final_k — that's OK)
     preds = [pid for pid, _ in ranked[:final_k]]
-    if len(preds) < final_k:
-        seen = set(preds)
-        for pid in fallback_products:
-            if pid in seen:
-                continue
-            preds.append(pid)
-            seen.add(pid)
-            if len(preds) >= final_k:
-                break
-    return preds[:final_k]
+    return preds
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")
@@ -954,8 +1059,6 @@ def main(cfg: InditexConfig) -> None:
 
     bundle_image_map = build_image_map(bundle_images_dir)
     product_image_map = build_image_map(product_images_dir)
-    bundle_image_map = build_image_map(bundle_images_dir)
-    product_image_map = build_image_map(product_images_dir)
 
     product_ids_all = products_df["product_asset_id"].astype(str).tolist()
     product_ids = [pid for pid in product_ids_all if pid in product_image_map]
@@ -968,6 +1071,25 @@ def main(cfg: InditexConfig) -> None:
         else ""
         for row in products_df.itertuples(index=False)
     }
+
+    # Load gender maps for gender-aware filtering
+    bundle_to_gender = load_bundle_genders(bundles_df)
+    products_gender_csv = data_dir / "product_dataset_with_gender.csv"
+    product_to_gender = load_product_genders(products_gender_csv)
+
+    # Load product categories for diversity dedup
+    product_to_category = load_product_categories(products_csv)
+
+    # Read inference post-processing params from config
+    gender_filter = bool(getattr(infer_cfg, "gender_filter", True))
+    max_per_category = int(getattr(infer_cfg, "max_per_category", 2))
+    score_threshold = float(getattr(infer_cfg, "score_threshold", 0.0))
+
+    if gender_filter and bundle_to_gender and product_to_gender:
+        print(f"Gender filter enabled: {len(bundle_to_gender)} bundles, {len(product_to_gender)} products")
+    else:
+        print("Gender filter disabled.")
+    print(f"Category dedup: max_per_category={max_per_category} | Score threshold: {score_threshold}")
 
     clip_model, _preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
         "hf-hub:Marqo/marqo-fashionSigLIP"
@@ -1005,7 +1127,6 @@ def main(cfg: InditexConfig) -> None:
     print(f"Product index shape: {tuple(product_embeddings.shape)}")
 
     train_bundle_ids = train_df["bundle_asset_id"].astype(str).tolist()
-    val_bundle_ids = split_val_bundles(train_bundle_ids, val_ratio=val_ratio, seed=seed)
     val_bundle_ids = split_val_bundles(train_bundle_ids, val_ratio=val_ratio, seed=seed)
     gt_map = build_gt_map(train_df)
 
@@ -1066,6 +1187,12 @@ def main(cfg: InditexConfig) -> None:
                 box_padding=box_padding,
                 final_k=max_eval_k,
                 fallback_products=fallback_products,
+                bundle_to_gender=bundle_to_gender,
+                product_to_gender=product_to_gender,
+                product_to_category=product_to_category,
+                gender_filter=gender_filter,
+                max_per_category=max_per_category,
+                score_threshold=score_threshold,
             )
             val_predictions.append(preds)
 
@@ -1102,6 +1229,12 @@ def main(cfg: InditexConfig) -> None:
             box_padding=box_padding,
             final_k=top_n_submit,
             fallback_products=fallback_products,
+            bundle_to_gender=bundle_to_gender,
+            product_to_gender=product_to_gender,
+            product_to_category=product_to_category,
+            gender_filter=gender_filter,
+            max_per_category=max_per_category,
+            score_threshold=score_threshold,
         )
         test_predictions[bundle_id] = preds
 
@@ -1113,7 +1246,6 @@ def main(cfg: InditexConfig) -> None:
             )
 
     submission_df = pd.DataFrame(submission_rows, columns=["bundle_asset_id", "product_asset_id"])
-    submission_df.to_csv(submission_out, index=False)
     submission_df.to_csv(submission_out, index=False)
 
     summary = {

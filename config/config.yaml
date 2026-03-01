@@ -4,9 +4,9 @@ defaults:
   - files: file.yaml
 
 params:
-  batch_size: 32
-  epochs: 40
-  lr: 2e-5
+  batch_size: 64
+  epochs: 15
+  lr: 3e-5
   weight_decay: 1e-4
   seed: 42
   num_workers: 4
@@ -63,3 +63,35 @@ infer:
   top_n_submit: 15
   val_ratio: 0.1
   eval_ks: "5,10,15"
+  # Gender filtering: discard products whose known gender ≠ bundle section
+  gender_filter: true
+  # Category diversity: max products per product_description (0 = unlimited)
+  max_per_category: 2
+  # Score threshold: drop results below this cosine similarity (0.0 = keep all)
+  score_threshold: 0.8
+  # Timestamp-aware reranking (score += ts adjustment)
+  ts_rerank_enabled: false
+  ts_delta_weight: 0.02
+  ts_decay_hours: 720.0
+  ts_bonus_same_date: 0.03
+  ts_bonus_same_month: 0.01
+  ts_bonus_same_quarter: 0.005
+  ts_penalty_diff_quarter: -0.005
+  # Post-processing Rerankers
+  rerank_hubness_enabled: true
+  rerank_hubness_max_ratio: 0.015
+  rerank_hubness_penalty: 0.1
+  rerank_heavy_enabled: false
+  rerank_heavy_model: "ViT-SO400M-14-SigLIP-384"
+  rerank_heavy_pretrained: "webli"
+  rerank_heavy_weight: 0.4
+  # Trained lightweight MLP reranker (sim + pairwise embedding features)
+  rerank_mlp_enabled: false
+  rerank_mlp_checkpoint: ""
+  # < 0.0 => use blend_alpha saved in checkpoint
+  rerank_mlp_blend_alpha: -1.0
+  rerank_mlp_batch_size: 4096
+  rerank_mlp_candidate_pool: 200
+  # Export train bundle embeddings for MLP training (multi-box aggregated)
+  export_train_bundle_embeddings: false
+  train_bundle_embeddings_out: "outputs/train_bundle_embeddings.pt"
