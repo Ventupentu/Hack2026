@@ -51,10 +51,69 @@ from src.new_infer import (
     open_image_safe,
     crop_with_box,
 )
+from src.detection import ClothingYOLODetector, ClassifiedBox, detect_classified_bundles
 from src.utils.metrics import evaluate_bundle_retrieval
 from src.reranker import apply_hubness_penalty, heavy_model_rerank
 
 _GENDER_UNKNOWN = 0
+
+# ---------------------------------------------------------------------------
+# YOLO class → product_description mapping
+# ---------------------------------------------------------------------------
+# YOLO model (kesimeg/yolov8n-clothing-detection) outputs 4 classes:
+#   0: accessories, 1: bags, 2: clothing, 3: shoes
+#
+# Each of the 128 product_description values is assigned to exactly one
+# YOLO class.  At inference time, a bounding box classified as e.g. "shoes"
+# can only match products whose description belongs to the "shoes" set.
+
+YOLO_CLASS_TO_DESCRIPTIONS: Dict[str, Set[str]] = {
+    "shoes": {
+        "ANKLE BOOT", "ATHLETIC FOOTWEAR", "BEACH SANDAL", "BOOT",
+        "FLAT ANKLE BOOT", "FLAT BOOT", "FLAT SHOES", "HEELED ANKLE BOOT",
+        "HEELED BOOT", "HEELED SHOES", "HIGH TOPS", "HOME SHOES",
+        "MOCCASINS", "RAIN BOOT", "RUNNING SHOES", "SANDAL", "SHOES",
+        "SPORT SHOES", "SPORTY SANDAL", "TRAINERS", "VAMP/PINKY", "WEDGE",
+    },
+    "bags": {
+        "HAND BAG-RUCKSACK", "PURSE WALLET", "WALLETS",
+    },
+    "accessories": {
+        "ACCESSORIES", "BABY ACCESORIES", "BABY BONNET", "BABY SOCKS",
+        "BELT", "BODY LOTION", "BODY OIL", "BOOKS", "BOW TIE/CUMMERBAND",
+        "CANDLE", "EAU DE COLOGNE", "EAU DE PARFUM", "EAU DE TOILETTE",
+        "EYE MAKE UP", "EYES CONTOUR", "FACIAL COSMETICS", "FACIAL SUNSCREEN",
+        "GLASSES", "GLOVES", "HAIR COSMETICS", "HAND CREAM", "HAT",
+        "IMIT JEWELLER", "LIP BALM", "LIP MAKE UP", "LIP SUNSCREEN",
+        "MATCHES", "MOISTURISING CREAM", "NAIL COSMETICS", "NAIL POLISH",
+        "PERFUME", "PERFUMED SOAP", "POWDER BRUSH-PUFF", "SCARF",
+        "SHAMPOO", "SHAWL/FOULARD", "SOCKS", "STATIONERY",
+        "STOCKINGS-TIGHTS", "SUSPENDERS", "TIE", "TOWEL", "UMBRELLA",
+    },
+    "clothing": {
+        "3/4 COAT", "ANORAK", "BABY BERMUDAS", "BABY BODY", "BABY CARDIGAN",
+        "BABY DRESS", "BABY JACKET/COAT", "BABY LEGGINGS", "BABY OUTFIT",
+        "BABY OVERALL", "BABY PANTY/UNDERP.", "BABY POLO SHIRT",
+        "BABY PYJAMA", "BABY ROMPER SUIT", "BABY SHIRT", "BABY SKIRT",
+        "BABY SWEATER", "BABY SWIMSUIT", "BABY T-SHIRT", "BABY TRACKSUIT",
+        "BABY TROUSERS", "BABY WAISTCOAT", "BABY WIND-JACKET",
+        "BATHROBE/DRES.GOWN", "BERMUDA", "BIB OVERALL", "BLAZER",
+        "BODYSUIT", "BRA", "CARDIGAN", "COAT", "DRESS",
+        "ENSEMBLE..SET", "KNITTED WAISTCOAT", "LEGGINGS",
+        "LEISURE AND SPORTS", "NEWBORN", "NEWBORN TRICOT",
+        "NIGHTIE/PYJAMAS", "OVERALL", "OVERSHIRT", "PANTY/UNDERPANT",
+        "PARKA", "POLO SHIRT", "SHIRT", "SHORTS", "SKIRT",
+        "SLEEVELESS PAD. JACKET", "SWEATER", "SWEATSHIRT", "SWIMSUIT",
+        "T-SHIRT", "TOPS AND OTHERS", "TRENCH RAINCOAT", "TROUSERS",
+        "UNDERWEAR", "UNIFORM", "WAISTCOAT", "WIND-JACKET",
+    },
+}
+
+# Reverse lookup: product_description (uppercase) → YOLO class
+DESC_TO_YOLO_CLASS: Dict[str, str] = {}
+for _yolo_cls, _descs in YOLO_CLASS_TO_DESCRIPTIONS.items():
+    for _d in _descs:
+        DESC_TO_YOLO_CLASS[_d] = _yolo_cls
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +584,37 @@ def build_crop_items_clean(
     return items
 
 
+def build_classified_crop_items(
+    bundle_ids: List[str],
+    bundle_image_map: Dict[str, Path],
+    bundle_to_classified_boxes: Dict[str, List[ClassifiedBox]],
+) -> List[Tuple[str, Path, Any, float, str]]:
+    """Build crop items carrying the YOLO class label per crop.
+
+    Returns list of (bundle_id, path, padded_box_or_None, confidence, yolo_class).
+    When no detections exist the class is "" (empty → no filtering).
+    """
+    items: List[Tuple[str, Path, Any, float, str]] = []
+    box_pad = 0.15
+
+    for bid in bundle_ids:
+        path = bundle_image_map.get(bid)
+        if path is None or not path.exists():
+            continue
+        boxes = bundle_to_classified_boxes.get(bid, [])
+        if boxes:
+            for x1, y1, x2, y2, conf, yolo_cls in boxes:
+                w, h = x2 - x1, y2 - y1
+                px, py = int(w * box_pad), int(h * box_pad)
+                padded_box = (x1 - px, y1 - py, x2 + px, y2 + py)
+                items.append((bid, path, padded_box, conf, yolo_cls))
+        else:
+            # No detections → full image, no class filter
+            items.append((bid, path, None, 1.0, ""))
+
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Encode bundle crops (no hflip TTA — we average original+hflip per crop)
 # ---------------------------------------------------------------------------
@@ -572,12 +662,61 @@ def encode_bundle_crops_averaged(
     return dict(result)
 
 
+@torch.inference_mode()
+def encode_classified_bundle_crops(
+    classified_crop_items: List[Tuple[str, Path, Any, float, str]],
+    model: torch.nn.Module,
+    preprocess: Callable,
+    device: torch.device,
+    batch_size: int,
+    num_workers: int,
+    amp: bool,
+) -> Dict[str, List[Tuple[np.ndarray, float, str]]]:
+    """Encode bundle crops carrying YOLO class labels through.
+
+    Returns bundle_id -> [(averaged_embedding, confidence, yolo_class), ...]
+    """
+    from torch.utils.data import DataLoader
+
+    # Build side-map: (bid, rounded_conf) → yolo_class before stripping the 5th element
+    conf_to_yolo: Dict[Tuple[str, float], str] = {}
+    plain_items: List[Tuple[str, Path, Any, float]] = []
+    for bid, path, box, conf, yolo_cls in classified_crop_items:
+        key = (bid, round(float(conf), 6))
+        conf_to_yolo[key] = yolo_cls
+        plain_items.append((bid, path, box, conf))
+
+    dataset = BundleCropDataset(plain_items, preprocess, use_hflip_tta=True)
+    loader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=(device.type == "cuda"),
+        collate_fn=collate_skip_none,
+    )
+    ids, embs, confs = _encode_loader(model, loader, device, amp, "Encoding bundle crops")
+
+    # Group by (bundle_id, confidence) pairs to identify physical crops
+    crop_groups: Dict[Tuple[str, float], List[np.ndarray]] = defaultdict(list)
+    for bid, emb, conf in zip(ids, embs, confs):
+        key = (bid, round(float(conf), 6))
+        crop_groups[key].append(emb)
+
+    # Average TTA embeddings per physical crop and re-normalize
+    result: Dict[str, List[Tuple[np.ndarray, float, str]]] = defaultdict(list)
+    for (bid, conf), emb_list in crop_groups.items():
+        avg_emb = np.mean(emb_list, axis=0)
+        avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
+        yolo_cls = conf_to_yolo.get((bid, conf), "")
+        result[bid].append((avg_emb.astype(np.float32), conf, yolo_cls))
+
+    return dict(result)
+
+
 # ---------------------------------------------------------------------------
 # Phase 1 retrieval: section filter + zero-shot category + top-3/crop
 # ---------------------------------------------------------------------------
 
 def retrieve_phase1(
-    bundle_crops: Dict[str, List[Tuple[np.ndarray, float]]],
+    bundle_crops: Dict[str, List[Tuple]],
     section_indices: Dict[int, Tuple[ProductIndex, List[str]]],
     bundle_to_section: Dict[str, int],
     product_to_desc: Dict[str, str],
@@ -593,6 +732,7 @@ def retrieve_phase1(
     gender_filter: bool = True,
     bundle_to_article: Optional[Dict[str, str]] = None,
     product_to_article: Optional[Dict[str, str]] = None,
+    yolo_class_filter: bool = True,
 ) -> Dict[str, List[Tuple[str, float]]]:
     """Phase 1 retrieval pipeline:
 
@@ -602,10 +742,14 @@ def retrieve_phase1(
          a. Classify the crop (zero-shot) to get predicted category
          b. Search top-K from section index
          c. Boost products matching the predicted category
+         d. **Filter** products whose description doesn't match the crop's YOLO class
       3. Aggregate scores, apply filters, deduplicate by category
     """
     results: Dict[str, List[Tuple[str, float]]] = {}
     fallback_index = section_indices.get(1, list(section_indices.values())[0])
+
+    # Pre-compute allowed product descriptions per YOLO class for fast lookup
+    allowed_descs_per_yolo: Dict[str, Set[str]] = YOLO_CLASS_TO_DESCRIPTIONS
 
     for bundle_id, crops in tqdm(bundle_crops.items(), desc="Phase 1 retrieval", leave=False):
         section = bundle_to_section.get(bundle_id, 0)
@@ -615,7 +759,19 @@ def retrieve_phase1(
         candidates: Dict[str, float] = {}
         bundle_article = bundle_to_article.get(bundle_id) if bundle_to_article else None
 
-        for emb, conf in crops:
+        for crop_tuple in crops:
+            # Unpack: 2-tuple or 3-tuple
+            if len(crop_tuple) == 3:
+                emb, conf, yolo_cls = crop_tuple
+            else:
+                emb, conf = crop_tuple[0], crop_tuple[1]
+                yolo_cls = ""
+
+            # Allowed descriptions for this crop's YOLO class
+            allowed_descs: Optional[Set[str]] = None
+            if yolo_class_filter and yolo_cls:
+                allowed_descs = allowed_descs_per_yolo.get(yolo_cls)
+
             # Step 1: Classify the crop (zero-shot)
             predicted_cats = classify_crop(
                 emb, category_names, category_embeddings, device, top_k=3,
@@ -623,12 +779,22 @@ def retrieve_phase1(
             top_category = predicted_cats[0][0] if predicted_cats else ""
 
             # Step 2: Search top-K from section-filtered index
-            indices, scores = product_index.search(emb, top_k_per_crop)
+            # Search a wider pool so that after YOLO filtering we still have enough
+            search_k = top_k_per_crop * 3 if allowed_descs is not None else top_k_per_crop
+            indices, scores = product_index.search(emb, search_k)
 
+            matched_this_crop = 0
             for idx, sim in zip(indices[0], scores[0]):
                 if idx < 0:
                     continue
                 pid = product_index.product_ids[int(idx)]
+
+                # YOLO class filter: skip products that don't match the crop's class
+                if allowed_descs is not None:
+                    prod_desc = product_to_desc.get(pid, "")
+                    if prod_desc and prod_desc not in allowed_descs:
+                        continue
+
                 combined = float(sim) * max(float(conf), 0.1)
 
                 # Step 3: Category boost — if product description matches predicted category
@@ -644,6 +810,9 @@ def retrieve_phase1(
 
                 # MAX aggregation: keep the best score for each product
                 candidates[pid] = max(candidates.get(pid, 0.0), combined)
+                matched_this_crop += 1
+                if matched_this_crop >= top_k_per_crop:
+                    break
 
         # Sort by score descending
         ranked = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
@@ -955,6 +1124,23 @@ def main(cfg: InditexConfig) -> None:
         encoded_pids, product_embeddings, product_sections,
     )
 
+    # ---- Create YOLO detector (shared across val & test) ----
+    print("\n  Creating YOLO detector for classified detection...")
+    try:
+        yolo_detector = ClothingYOLODetector(
+            model_id=cfg.params.bbox_model_id,
+            conf_threshold=cfg.params.bbox_conf_threshold,
+            iou_threshold=cfg.params.bbox_iou_threshold,
+            max_boxes_per_image=cfg.params.bbox_max_per_image,
+            min_area_ratio=cfg.params.bbox_min_area_ratio,
+        )
+        print(f"  YOLO class names: {yolo_detector.class_names}")
+        _yolo_available = True
+    except Exception as exc:
+        print(f"  Warning: could not create YOLO detector ({exc}), falling back to unclassified.")
+        yolo_detector = None
+        _yolo_available = False
+
     # ---- Validation ----
     if val_ratio > 0:
         print(f"\n[4/5] Validation (val_ratio={val_ratio})...")
@@ -969,11 +1155,22 @@ def main(cfg: InditexConfig) -> None:
         for row in train_df.itertuples(index=False):
             gt_map[str(row.bundle_asset_id)].add(str(row.product_asset_id))
 
-        val_boxes = detect_bundles(val_bundle_ids, bundle_image_map, cfg.params)
-        val_crop_items = build_crop_items_clean(val_bundle_ids, bundle_image_map, val_boxes)
-        val_crop_embs = encode_bundle_crops_averaged(
-            val_crop_items, model, preprocess, device, batch_size, num_workers, amp,
-        )
+        if _yolo_available and yolo_detector is not None:
+            val_classified_boxes = detect_classified_bundles(
+                val_bundle_ids, bundle_image_map, yolo_detector,
+            )
+            val_classified_items = build_classified_crop_items(
+                val_bundle_ids, bundle_image_map, val_classified_boxes,
+            )
+            val_crop_embs = encode_classified_bundle_crops(
+                val_classified_items, model, preprocess, device, batch_size, num_workers, amp,
+            )
+        else:
+            val_boxes = detect_bundles(val_bundle_ids, bundle_image_map, cfg.params)
+            val_crop_items = build_crop_items_clean(val_bundle_ids, bundle_image_map, val_boxes)
+            val_crop_embs = encode_bundle_crops_averaged(
+                val_crop_items, model, preprocess, device, batch_size, num_workers, amp,
+            )
         val_predictions = retrieve_phase1(
             val_crop_embs, section_indices, bundle_to_section,
             product_to_desc_upper, category_names, category_embeddings, device,
@@ -992,14 +1189,28 @@ def main(cfg: InditexConfig) -> None:
             print("  Applying MLP Reranker (Val)...")
             val_query_extra_map: Optional[Dict[str, np.ndarray]] = None
             if mlp_query_extra_dim > 0:
+                # build_bundle_box_feature_map expects 5-tuple ScoredBox
+                if _yolo_available and yolo_detector is not None:
+                    # Convert 6-tuple ClassifiedBox → 5-tuple ScoredBox
+                    val_boxes_for_mlp = {
+                        bid: [(x1, y1, x2, y2, conf) for x1, y1, x2, y2, conf, _ in cboxes]
+                        for bid, cboxes in val_classified_boxes.items()
+                    }
+                else:
+                    val_boxes_for_mlp = val_boxes
                 val_query_extra_map = build_bundle_box_feature_map(
                     bundle_ids=val_bundle_ids,
                     bundle_image_map=bundle_image_map,
-                    bundle_to_boxes=val_boxes,
+                    bundle_to_boxes=val_boxes_for_mlp,
                 )
+            # apply_mlp_rerank expects 2-tuple (emb, conf) per crop — strip YOLO class if present
+            _val_embs_for_mlp = {
+                bid: [(emb, conf) for emb, conf, *_ in crops]
+                for bid, crops in val_crop_embs.items()
+            }
             val_predictions = apply_mlp_rerank(
                 predictions=val_predictions,
-                bundle_crop_embeddings=val_crop_embs,
+                bundle_crop_embeddings=_val_embs_for_mlp,
                 encoded_product_ids=encoded_pids,
                 product_embeddings=product_embeddings,
                 model=mlp_reranker,
@@ -1020,9 +1231,14 @@ def main(cfg: InditexConfig) -> None:
             )
             
         if rerank_heavy_enabled:
+            # heavy_model_rerank expects 4-tuple crop items
+            if _yolo_available and yolo_detector is not None:
+                _val_crops_4t = [(b, p, bx, c) for b, p, bx, c, _ in val_classified_items]
+            else:
+                _val_crops_4t = val_crop_items
             val_predictions = heavy_model_rerank(
                 predictions=val_predictions,
-                bundle_crops=val_crop_items,
+                bundle_crops=_val_crops_4t,
                 products_df=products_df,
                 product_images_dir=str(product_images_dir),
                 device=device,
@@ -1057,18 +1273,37 @@ def main(cfg: InditexConfig) -> None:
     test_bundle_ids = test_df["bundle_asset_id"].astype(str).drop_duplicates().tolist()
     print(f"  Test bundles: {len(test_bundle_ids)}")
 
-    test_boxes = detect_bundles(test_bundle_ids, bundle_image_map, cfg.params)
-    detection_stats = {
-        "total": len(test_bundle_ids),
-        "with_detections": sum(1 for boxes in test_boxes.values() if boxes),
-        "avg_boxes": float(np.mean([len(b) for b in test_boxes.values()])) if test_boxes else 0,
-    }
-    print(f"  Detections: {detection_stats}")
+    if _yolo_available and yolo_detector is not None:
+        test_classified_boxes = detect_classified_bundles(
+            test_bundle_ids, bundle_image_map, yolo_detector,
+        )
+        detection_stats = {
+            "total": len(test_bundle_ids),
+            "with_detections": sum(1 for boxes in test_classified_boxes.values() if boxes),
+            "avg_boxes": float(np.mean([len(b) for b in test_classified_boxes.values()])) if test_classified_boxes else 0,
+        }
+        print(f"  Detections (classified): {detection_stats}")
 
-    test_crop_items = build_crop_items_clean(test_bundle_ids, bundle_image_map, test_boxes)
-    test_crop_embs = encode_bundle_crops_averaged(
-        test_crop_items, model, preprocess, device, batch_size, num_workers, amp,
-    )
+        test_classified_items = build_classified_crop_items(
+            test_bundle_ids, bundle_image_map, test_classified_boxes,
+        )
+        test_crop_embs = encode_classified_bundle_crops(
+            test_classified_items, model, preprocess, device, batch_size, num_workers, amp,
+        )
+    else:
+        test_boxes = detect_bundles(test_bundle_ids, bundle_image_map, cfg.params)
+        detection_stats = {
+            "total": len(test_bundle_ids),
+            "with_detections": sum(1 for boxes in test_boxes.values() if boxes),
+            "avg_boxes": float(np.mean([len(b) for b in test_boxes.values()])) if test_boxes else 0,
+        }
+        print(f"  Detections: {detection_stats}")
+
+        test_crop_items = build_crop_items_clean(test_bundle_ids, bundle_image_map, test_boxes)
+        test_crop_embs = encode_bundle_crops_averaged(
+            test_crop_items, model, preprocess, device, batch_size, num_workers, amp,
+        )
+
     test_predictions = retrieve_phase1(
         test_crop_embs, section_indices, bundle_to_section,
         product_to_desc_upper, category_names, category_embeddings, device,
@@ -1087,14 +1322,26 @@ def main(cfg: InditexConfig) -> None:
         print("  Applying MLP Reranker (Test)...")
         test_query_extra_map: Optional[Dict[str, np.ndarray]] = None
         if mlp_query_extra_dim > 0:
+            if _yolo_available and yolo_detector is not None:
+                test_boxes_for_mlp = {
+                    bid: [(x1, y1, x2, y2, conf) for x1, y1, x2, y2, conf, _ in cboxes]
+                    for bid, cboxes in test_classified_boxes.items()
+                }
+            else:
+                test_boxes_for_mlp = test_boxes
             test_query_extra_map = build_bundle_box_feature_map(
                 bundle_ids=test_bundle_ids,
                 bundle_image_map=bundle_image_map,
-                bundle_to_boxes=test_boxes,
+                bundle_to_boxes=test_boxes_for_mlp,
             )
+        # apply_mlp_rerank expects 2-tuple (emb, conf) per crop — strip YOLO class if present
+        _test_embs_for_mlp = {
+            bid: [(emb, conf) for emb, conf, *_ in crops]
+            for bid, crops in test_crop_embs.items()
+        }
         test_predictions = apply_mlp_rerank(
             predictions=test_predictions,
-            bundle_crop_embeddings=test_crop_embs,
+            bundle_crop_embeddings=_test_embs_for_mlp,
             encoded_product_ids=encoded_pids,
             product_embeddings=product_embeddings,
             model=mlp_reranker,
@@ -1115,9 +1362,14 @@ def main(cfg: InditexConfig) -> None:
         )
         
     if rerank_heavy_enabled:
+        # heavy_model_rerank expects 4-tuple crop items
+        if _yolo_available and yolo_detector is not None:
+            _test_crops_4t = [(b, p, bx, c) for b, p, bx, c, _ in test_classified_items]
+        else:
+            _test_crops_4t = test_crop_items
         test_predictions = heavy_model_rerank(
             predictions=test_predictions,
-            bundle_crops=test_crop_items,
+            bundle_crops=_test_crops_4t,
             products_df=products_df,
             product_images_dir=str(product_images_dir),
             device=device,
