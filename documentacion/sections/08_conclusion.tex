@@ -1,15 +1,7 @@
-<<<<<<< HEAD
 \section{Conclusiones}
 
-El repositorio Hack2026 dispone de un stack completo para retrieval bundle$\rightarrow$product: curacion de datos, aumento offline, entrenamiento OpenCLIP, multiples estrategias de inferencia y generacion de entregas en formato de competicion.
+El repositorio goofytex implementa un stack completo para retrieval bundle$\rightarrow$product con enfoque CRISP-DM: preparacion de datos, modelado multimodal, deteccion por regiones, inferencia y export de entregas.
 
-La implementacion actual prioriza trazabilidad operativa (Hydra, checkpoints, metricas y reportes CSV/JSON) y permite iterar rapidamente sobre variantes de ranking y post-procesado sin rehacer el pipeline de base.
+La documentacion consolidada describe de forma operativa las familias de modelos probadas (QRLite, OpenCLIP Marqo Fashion SigLIP y SigLIP), el uso de multiples configuraciones YOLO y el conjunto de tecnologias empleadas en codigo y ejecucion.
 
-Este documento queda como referencia tecnica del estado vigente del sistema y como base para trabajo futuro en validacion rigurosa, calibracion del ranking y optimizacion de latencia en produccion.
-=======
-\section{Conclusion}
-
-The Hack2026 repository already contains a complete retrieval stack: data preparation, deterministic augmentation, baseline retrieval, OpenCLIP training, optional region-aware encoding, and submission generation. The current design is practical and production-oriented, with explicit configuration, checkpointing, and metrics logging.
-
-This paper serves as a technical specification of the implemented system and can be used as a foundation for future work on retrieval accuracy, latency optimization, and large-scale candidate reranking.
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+Este documento queda como especificacion tecnica para continuar iterando sobre el pipeline con criterios de trazabilidad y reproducibilidad.

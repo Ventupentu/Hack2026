@@ -1,97 +1,120 @@
-<<<<<<< HEAD
-\section{Metodologia}
+\section{Metodologia (CRISP-DM)}
 
-\subsection{Formulacion del Problema}
+\subsection{Marco CRISP-DM aplicado}
 
-Para cada bundle $b$, se ordena un conjunto grande de productos $\{p_i\}_{i=1}^{N}$ y se devuelven hasta 15 IDs unicos. El entrenamiento usa enlaces positivos de \texttt{bundles\_product\_match\_train.csv}.
+La metodologia del proyecto sigue CRISP-DM y se adapta directamente a los scripts del repositorio (Tabla~\ref{tab:crisp-map}).
 
-\subsection{Representacion Multimodal con OpenCLIP}
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{p{0.27\linewidth} p{0.65\linewidth}}
+    \toprule
+    \textbf{Fase CRISP-DM} & \textbf{Aplicacion en goofytex} \\
+    \midrule
+    \textbf{Business Understanding} & Definicion del objetivo bundle$\rightarrow$product y del formato de entrega (maximo 15 predicciones por bundle). \\
+    \textbf{Data Understanding} & Inspeccion de CSVs, mapeo de imagenes y analisis de metadata (scripts en \texttt{preprocess\_data.py} y \texttt{src/utils}). \\
+    \textbf{Data Preparation} & Limpieza de etiquetas, manifests train/val, descarga/validacion de imagenes y augmentacion offline determinista. \\
+    \textbf{Modeling} & Entrenamiento retrieval multimodal con OpenCLIP, pruebas de familias de embedding alternativas y deteccion de regiones con YOLO. \\
+    \textbf{Evaluation} & Evaluacion local de ranking en validacion y chequeos funcionales del pipeline por script/variante. \\
+    \textbf{Deployment} & Generacion de \texttt{submission.csv}, configuracion con Hydra y ejecucion reproducible por CLI. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Mapeo CRISP-DM a componentes reales del repositorio.}
+  \label{tab:crisp-map}
+\end{table}
 
-El encoder base es Marqo Fashion SigLIP. Para productos, el sistema puede fusionar embedding visual y embedding textual de \texttt{product\_description}; para bundles se usa principalmente embedding visual de imagen/crops.
+\begin{figure}[h]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \fbox{\parbox{0.92\linewidth}{\textbf{Business Understanding}\\Objetivo de retrieval, contrato de salida y restricciones de ranking}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{Data Understanding + Preparation}\\CSVs, imagenes, manifiestos, limpieza, augmentacion y features auxiliares}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{Modeling}\\Embeddings (QRLite/OpenCLIP/SigLIP), deteccion YOLO, retrieval y post-procesado}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{Evaluation + Deployment}\\Validacion local, export de submission y iteracion controlada por configuracion Hydra}}
+  \end{tabular}
+  \caption{Diagrama de alto nivel del flujo CRISP-DM en el proyecto.}
+  \label{fig:crisp-flow}
+\end{figure}
 
-La similitud se calcula con coseno (producto punto tras normalizacion L2):
+\subsection{Modelos de embeddings probados}
+
+Durante la iteracion metodologica se trabajaron varias familias de embedding visual/multimodal. Entre ellas, la linea CLIP/SigLIP~\cite{radford2021clip,zhai2023siglip} estructura el backend principal de representacion. La Tabla~\ref{tab:embedding-families} resume su papel.
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{p{0.30\linewidth} p{0.22\linewidth} p{0.40\linewidth}}
+    \toprule
+    \textbf{Familia de modelo} & \textbf{Estado} & \textbf{Uso en el flujo} \\
+    \midrule
+    \textbf{QRLite} & Probado & Alternativa ligera para prototipos de embeddings y comparacion de coste/inferencia. \\
+    \textbf{OpenCLIP Marqo Fashion SigLIP} & Principal & Backend actual de entrenamiento e inferencia multimodal (scripts \texttt{train}, \texttt{infer} y \texttt{new\_infer}). \\
+    \textbf{SigLIP} & Probado & Familia contrastiva adicional usada en pruebas de embeddings y zero-shot de categorias. \\
+    \textbf{Torchvision CNNs} (ResNet18/ResNet50/EfficientNet-B0) & Baseline & Encoders visuales preentrenados para baseline y comparativas de retrieval. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Familias de embedding consideradas en la metodologia.}
+  \label{tab:embedding-families}
+\end{table}
+
+\subsection{Deteccion de prendas con YOLO}
+
+Para capturar objetos dentro del bundle se integra deteccion por regiones. El repositorio usa por defecto \texttt{kesimeg/yolov8n-clothing-detection} mediante \texttt{ultralyticsplus}, y la metodologia contempla pruebas con varias configuraciones/checkpoints YOLO~\cite{jocher2023yolo} para ajustar granularidad de crops.
+
+\begin{table}[h]
+  \centering
+  \small
+  \begin{tabular}{p{0.32\linewidth} p{0.24\linewidth} p{0.36\linewidth}}
+    \toprule
+    \textbf{Componente YOLO} & \textbf{Implementacion} & \textbf{Funcion en pipeline} \\
+    \midrule
+    YOLO clothing (familia YOLOv8) & \texttt{src/detection.py} & Deteccion de cajas por bundle y cache JSON reutilizable. \\
+    Variantes de umbral (conf/IoU) & Hydra config & Control de precision/cobertura de cajas antes del retrieval por crop. \\
+    Fallback imagen completa & \texttt{src.infer*} & Garantiza inferencia cuando no hay detecciones validas. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Uso metodologico de YOLO en la fase de modelado/inferencia.}
+  \label{tab:yolo-components}
+\end{table}
+
+\subsection{Pipeline tecnico end-to-end}
+
+\begin{figure}[h]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \fbox{\parbox{0.92\linewidth}{\textbf{1) Ingesta}\\CSVs + imagenes locales + metadata (seccion, genero, timestamps)}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{2) Embeddings}\\Encoder principal (OpenCLIP Marqo SigLIP) o variantes de embedding probadas}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{3) Deteccion y retrieval}\\YOLO por crop + similitud coseno + indice de productos (FAISS opcional)}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{4) Post-procesado}\\Filtro de genero, diversidad por categoria, score threshold, TS rerank}}\\[2pt]
+    $\downarrow$\\[2pt]
+    \fbox{\parbox{0.92\linewidth}{\textbf{5) Salida}\\\texttt{submission.csv} con ranking por bundle}}
+  \end{tabular}
+  \caption{Pipeline bundle$\rightarrow$product implementado en los scripts de inferencia.}
+  \label{fig:end2end-flow}
+\end{figure}
+
+\subsection{Recuperacion y scoring}
+
+La similitud principal se calcula por coseno sobre embeddings normalizados:
 \begin{equation}
 \mathrm{sim}(\mathbf{q}, \mathbf{P}) = \mathbf{q}\mathbf{P}^{\top}
 \end{equation}
 
-\subsection{Entrenamiento Contrastivo}
+En entrenamiento (\texttt{src/models/retrieval\_openclip.py}) se usa perdida contrastiva bidireccional bundle$\leftrightarrow$product, con scheduler coseno, warmup, AMP opcional y mineria de negativos duros configurable.
 
-\texttt{src/models/retrieval\_openclip.py} optimiza una perdida contrastiva bidireccional (bundle$\leftrightarrow$product) con positivos multiples por bundle dentro del batch, scheduler coseno con warmup y AMP opcional.
+\subsection{Variantes de inferencia implementadas}
 
-\subsection{Inferencia Guiada por Deteccion}
-
-Cuando \texttt{params.use\_bundle\_boxes=true}, se detectan regiones de ropa con YOLO y se hace retrieval por crop. Si no hay detecciones, se usa fallback de imagen completa. La cache de cajas se guarda en JSON para reutilizacion entre corridas.
-
-\subsection{Post-procesado}
-
-Segun script/config, se aplican:
 \begin{itemize}
-  \item filtro de genero (bundle section vs. \texttt{product\_dataset\_with\_gender.csv});
-  \item diversidad por categoria (maximo por \texttt{product\_description});
-  \item umbral minimo de score;
-  \item reranking por cercania temporal (timestamp \texttt{ts} en URLs).
+  \item \texttt{src.infer}: pipeline principal (OpenCLIP + YOLO + filtros).
+  \item \texttt{src.new\_infer}: retrieval per-crop con TTA y FAISS opcional.
+  \item \texttt{src.infer\_phase1}: filtrado por seccion + zero-shot por categoria.
+  \item \texttt{src.infer\_top1}: estrategia compacta top-1 por crop.
+  \item \texttt{src.infer\_openclip}: script legacy por argparse.
 \end{itemize}
-
-\subsection{Variantes de Inferencia}
-
-El repositorio mantiene varias estrategias:
-\begin{itemize}
-  \item \texttt{src.infer}: pipeline principal OpenCLIP+YOLO+filtros.
-  \item \texttt{src.new\_infer}: per-crop retrieval con TTA y FAISS opcional.
-  \item \texttt{src.infer\_phase1}: filtrado por seccion + zero-shot de categoria por crop.
-  \item \texttt{src.infer\_top1}: top-1 por crop para predicciones mas compactas.
-  \item \texttt{src.infer\_openclip}: version simple por argparse.
-\end{itemize}
-
-\subsection{Metricas}
-
-La validacion local usa \texttt{Hit@K} y \texttt{Recall@K} (\texttt{src/utils/metrics.py}). Para un bundle con verdad terreno $G_b$ y top-$K$ predicho $\hat{G}_b^K$:
-\begin{equation}
-\mathrm{Recall@K}(b)=\frac{|G_b \cap \hat{G}_b^K|}{|G_b|}
-\end{equation}
-=======
-\section{Methodology}
-
-\subsection{Problem Formulation}
-
-For each bundle query $b$, the objective is to rank product candidates $\{p_i\}_{i=1}^{N}$ and output up to 15 unique product IDs with highest relevance. Training uses known positive links from \texttt{bundles\_product\_match\_train.csv}.
-
-\subsection{Baseline Retrieval (\texttt{src/infer.py})}
-
-The baseline uses pretrained torchvision backbones (\texttt{resnet18}, \texttt{resnet50}, \texttt{efficientnet\_b0}) to encode bundle and product images. Embeddings are L2-normalized and cosine similarity is computed by dot product.
-
-For each query embedding $\mathbf{q}$ and product matrix $\mathbf{P}$:
-\begin{equation}
-\mathrm{sim}(\mathbf{q}, \mathbf{P}) = \mathbf{q}\mathbf{P}^{\top}
-\end{equation}
-Top-$K$ retrieval is implemented via partial sorting (\texttt{np.argpartition}) for speed.
-
-\subsection{OpenCLIP Multimodal Retrieval}
-
-The advanced backend uses Marqo Fashion SigLIP~\cite{zhai2023siglip,radford2021clip}. Product embeddings can fuse image and text representations (product description tokens), while bundle queries are image-based.
-
-Training uses symmetric bidirectional contrastive loss:
-\begin{equation}
-\mathcal{L} = \frac{1}{2}\Big[
-\mathrm{CE}\big((\mathbf{Q}\mathbf{P}^{\top})/\tau,\mathbf{y}\big) +
-\mathrm{CE}\big((\mathbf{P}\mathbf{Q}^{\top})/\tau,\mathbf{y}\big)
-\Big]
-\end{equation}
-where $\tau$ is temperature and $\mathbf{y}=[0,\ldots,B-1]$ are in-batch positive indices.
-
-\subsection{Detection-Guided Bundle Encoding}
-
-When enabled (\texttt{params.use\_bundle\_boxes=true}), bundle images are processed with YOLO clothing detection~\cite{jocher2023yolo}. Each detected region is encoded, and region embeddings are averaged per bundle:
-\begin{equation}
-\mathbf{e}_b = \mathrm{norm}\left(\frac{1}{M_b}\sum_{m=1}^{M_b}\mathbf{e}_{b,m}\right)
-\end{equation}
-If no boxes are detected, a full-image fallback is used. Detection results are cached in JSON for reuse across runs.
-
-\subsection{Validation Metrics}
-
-Validation follows multi-label retrieval with Hit@K and Recall@K (implemented in \texttt{src/utils/metrics.py}). Given ground-truth set $G_b$ and top-$K$ predictions $\hat{G}_b^K$:
-\begin{equation}
-\mathrm{Recall@K}(b)=\frac{|G_b \cap \hat{G}_b^K|}{|G_b|}
-\end{equation}
-The reported metric is the mean across evaluated bundles.
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
