@@ -78,6 +78,14 @@ class Infer:
     ts_bonus_same_month: float = 0.0
     ts_bonus_same_quarter: float = 0.0
     ts_penalty_diff_quarter: float = 0.0
+    # Post-processing Rerankers
+    rerank_hubness_enabled: bool = False
+    rerank_hubness_max_ratio: float = 0.015
+    rerank_hubness_penalty: float = 0.1
+    rerank_heavy_enabled: bool = False
+    rerank_heavy_model: str = "ViT-SO400M-14-SigLIP-384"
+    rerank_heavy_pretrained: str = "webli"
+    rerank_heavy_weight: float = 0.4
 
 
 @dataclass

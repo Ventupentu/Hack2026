@@ -36,11 +36,9 @@ from src.new_infer import (
     ProductIndex,
     build_image_map,
     collate_skip_none,
-    compute_ts_adjustment,
     detect_bundles,
     encode_products,
     filter_cross_gender,
-    load_asset_timestamps,
     load_bundle_genders,
     load_openclip_model,
     load_product_categories,
@@ -54,6 +52,7 @@ from src.new_infer import (
     crop_with_box,
 )
 from src.utils.metrics import evaluate_bundle_retrieval
+from src.reranker import apply_hubness_penalty, heavy_model_rerank
 
 _GENDER_UNKNOWN = 0
 
@@ -259,16 +258,9 @@ def retrieve_phase1(
     bundle_to_gender: Optional[Dict[str, int]] = None,
     product_to_gender: Optional[Dict[str, int]] = None,
     gender_filter: bool = True,
-    bundle_to_ts: Optional[Dict[str, int]] = None,
-    product_to_ts: Optional[Dict[str, int]] = None,
-    ts_rerank_enabled: bool = False,
-    ts_delta_weight: float = 0.0,
-    ts_decay_hours: float = 720.0,
-    ts_bonus_same_date: float = 0.0,
-    ts_bonus_same_month: float = 0.0,
-    ts_bonus_same_quarter: float = 0.0,
-    ts_penalty_diff_quarter: float = 0.0,
-) -> Dict[str, List[str]]:
+    bundle_to_article: Optional[Dict[str, str]] = None,
+    product_to_article: Optional[Dict[str, str]] = None,
+) -> Dict[str, List[Tuple[str, float]]]:
     """Phase 1 retrieval pipeline:
 
     For each bundle:
@@ -279,7 +271,7 @@ def retrieve_phase1(
          c. Boost products matching the predicted category
       3. Aggregate scores, apply filters, deduplicate by category
     """
-    results: Dict[str, List[str]] = {}
+    results: Dict[str, List[Tuple[str, float]]] = {}
     fallback_index = section_indices.get(1, list(section_indices.values())[0])
 
     for bundle_id, crops in tqdm(bundle_crops.items(), desc="Phase 1 retrieval", leave=False):
@@ -288,6 +280,7 @@ def retrieve_phase1(
         product_index, _ = index_entry
 
         candidates: Dict[str, float] = {}
+        bundle_article = bundle_to_article.get(bundle_id) if bundle_to_article else None
 
         for emb, conf in crops:
             # Step 1: Classify the crop (zero-shot)
@@ -309,6 +302,12 @@ def retrieve_phase1(
                 prod_desc = product_to_desc.get(pid, "")
                 if top_category and prod_desc == top_category:
                     combined *= category_boost
+                    
+                # Massive Boost for Exact Article Match (Golden Feature)
+                if bundle_article and product_to_article:
+                    prod_article = product_to_article.get(pid)
+                    if prod_article and bundle_article == prod_article:
+                        combined *= 1000.0
 
                 # MAX aggregation: keep the best score for each product
                 candidates[pid] = max(candidates.get(pid, 0.0), combined)
@@ -321,30 +320,12 @@ def retrieve_phase1(
             bundle_gender = bundle_to_gender.get(bundle_id, _GENDER_UNKNOWN)
             ranked = filter_cross_gender(ranked, bundle_gender, product_to_gender)
 
-        # Timestamp rerank: score += adjustment_from_delta_ts
-        if ts_rerank_enabled and bundle_to_ts and product_to_ts:
-            bundle_ts = bundle_to_ts.get(bundle_id)
-            reranked: List[Tuple[str, float]] = []
-            for pid, base_score in ranked:
-                adjustment = compute_ts_adjustment(
-                    bundle_ts=bundle_ts,
-                    product_ts=product_to_ts.get(pid),
-                    delta_weight=ts_delta_weight,
-                    decay_hours=ts_decay_hours,
-                    bonus_same_date=ts_bonus_same_date,
-                    bonus_same_month=ts_bonus_same_month,
-                    bonus_same_quarter=ts_bonus_same_quarter,
-                    penalty_diff_quarter=ts_penalty_diff_quarter,
-                )
-                reranked.append((pid, base_score + adjustment))
-            ranked = sorted(reranked, key=lambda x: x[1], reverse=True)
-
         # Category Deduplication
-        final_pids = []
+        final_preds = []
         category_counts: Dict[str, int] = defaultdict(int)
         
         for pid, score in ranked:
-            if len(final_pids) >= max_products:
+            if len(final_preds) >= max_products:
                 break
                 
             # Category limit logic
@@ -352,7 +333,7 @@ def retrieve_phase1(
             if desc and category_counts[desc] >= max_per_category:
                 continue
                 
-            final_pids.append(pid)
+            final_preds.append((pid, score))
             if desc:
                 category_counts[desc] += 1
                 
@@ -360,14 +341,16 @@ def retrieve_phase1(
         # we still want to return max_products if possible to maximize recall.
         # We fill the remaining slots with the next best overall candidates regardless of category limit, 
         # still respecting gender.
-        if len(final_pids) < max_products:
+        if len(final_preds) < max_products:
+            added_pids = {p for p, _ in final_preds}
             for pid, score in ranked:
-                if len(final_pids) >= max_products:
+                if len(final_preds) >= max_products:
                     break
-                if pid not in final_pids:
-                    final_pids.append(pid)
+                if pid not in added_pids:
+                    final_preds.append((pid, score))
+                    added_pids.add(pid)
 
-        results[bundle_id] = final_pids
+        results[bundle_id] = final_preds
 
     return results
 
@@ -378,7 +361,7 @@ def retrieve_phase1(
 
 def validate(
     bundle_ids: List[str],
-    predictions: Dict[str, List[str]],
+    predictions: Dict[str, List[Tuple[str, float]]],
     ground_truth: Dict[str, Set[str]],
     ks: List[int],
 ) -> Dict[str, float]:
@@ -386,7 +369,7 @@ def validate(
     for bid in bundle_ids:
         if bid in predictions and bid in ground_truth:
             pred_ids.append(bid)
-            pred_lists.append(predictions[bid])
+            pred_lists.append([p for p, _ in predictions[bid]])
     return evaluate_bundle_retrieval(pred_ids, pred_lists, ground_truth, ks)
 
 
@@ -418,17 +401,18 @@ def main(cfg: InditexConfig) -> None:
     checkpoint_path = cfg.infer.checkpoint_path
     n_tta = cfg.infer.tta_num_augs
     gender_filter = bool(getattr(cfg.infer, "gender_filter", True))
-    ts_rerank_enabled = bool(getattr(cfg.infer, "ts_rerank_enabled", False))
-    ts_delta_weight = float(getattr(cfg.infer, "ts_delta_weight", 0.0))
-    ts_decay_hours = float(getattr(cfg.infer, "ts_decay_hours", 720.0))
-    ts_bonus_same_date = float(getattr(cfg.infer, "ts_bonus_same_date", 0.0))
-    ts_bonus_same_month = float(getattr(cfg.infer, "ts_bonus_same_month", 0.0))
-    ts_bonus_same_quarter = float(getattr(cfg.infer, "ts_bonus_same_quarter", 0.0))
-    ts_penalty_diff_quarter = float(getattr(cfg.infer, "ts_penalty_diff_quarter", 0.0))
+    
+    rerank_hubness_enabled = bool(getattr(cfg.infer, "rerank_hubness_enabled", False))
+    rerank_hubness_max_ratio = float(getattr(cfg.infer, "rerank_hubness_max_ratio", 0.01))
+    rerank_hubness_penalty = float(getattr(cfg.infer, "rerank_hubness_penalty", 0.1))
+    rerank_heavy_enabled = bool(getattr(cfg.infer, "rerank_heavy_enabled", False))
+    rerank_heavy_model = str(getattr(cfg.infer, "rerank_heavy_model", "ViT-SO400M-14-SigLIP-384"))
+    rerank_heavy_pretrained = str(getattr(cfg.infer, "rerank_heavy_pretrained", "webli"))
+    rerank_heavy_weight = float(getattr(cfg.infer, "rerank_heavy_weight", 0.4))
 
     # Phase 1 specific params
-    TOP_K_PER_CROP = 10      # top-K candidates per crop
-    CATEGORY_BOOST = 1.8     # boost factor for category-matching products
+    TOP_K_PER_CROP = 20     # top-K candidates per crop
+    CATEGORY_BOOST = 1.4     # boost factor for category-matching products
     MAX_PRODUCTS = 15        # max products per bundle in output
     MAX_PER_CATEGORY = 2     # max products with the same description
 
@@ -441,15 +425,6 @@ def main(cfg: InditexConfig) -> None:
     model, preprocess, tokenizer = load_openclip_model(checkpoint_path, device)
     print(f"Device: {device} | AMP: {amp} | TTA: {n_tta}")
     print(f"Top-K/crop: {TOP_K_PER_CROP} | Category boost: {CATEGORY_BOOST} | Max products: {MAX_PRODUCTS}")
-    if ts_rerank_enabled:
-        print(
-            "TS rerank enabled: "
-            f"delta_weight={ts_delta_weight}, decay_hours={ts_decay_hours}, "
-            f"bonus_day={ts_bonus_same_date}, bonus_month={ts_bonus_same_month}, "
-            f"bonus_quarter={ts_bonus_same_quarter}, penalty_out_quarter={ts_penalty_diff_quarter}"
-        )
-    else:
-        print("TS rerank disabled.")
 
     # ---- Load data ----
     bundles_df = pd.read_csv(bundles_csv)
@@ -459,6 +434,21 @@ def main(cfg: InditexConfig) -> None:
 
     bundle_image_map = build_image_map(bundle_images_dir)
     product_image_map = build_image_map(product_images_dir)
+    
+    def extract_article(url):
+        if pd.isna(url):
+            return None
+        parts = str(url).split('/')
+        for p in reversed(parts):
+            if '.jpg' in p:
+                return p.split('.jpg')[0].split('-')[0]
+        return None
+
+    bundles_df['article'] = bundles_df['bundle_image_url'].apply(extract_article)
+    products_df['article'] = products_df['product_image_url'].apply(extract_article)
+    
+    bundle_to_article = dict(zip(bundles_df['bundle_asset_id'].astype(str), bundles_df['article']))
+    product_to_article = dict(zip(products_df['product_asset_id'].astype(str), products_df['article']))
 
     all_product_ids = products_df["product_asset_id"].astype(str).tolist()
     product_ids = [pid for pid in all_product_ids if pid in product_image_map]
@@ -466,8 +456,6 @@ def main(cfg: InditexConfig) -> None:
         products_df["product_asset_id"].astype(str),
         products_df["product_description"].fillna("").astype(str),
     ))
-    bundle_to_ts = load_asset_timestamps(bundles_df, "bundle_asset_id", "bundle_image_url")
-    product_to_ts = load_asset_timestamps(products_df, "product_asset_id", "product_image_url")
     # Uppercase description map for category matching
     product_to_desc_upper: Dict[str, str] = {
         pid: desc.strip().upper() for pid, desc in product_to_text.items()
@@ -520,6 +508,13 @@ def main(cfg: InditexConfig) -> None:
         batch_size, num_workers, amp, n_tta,
     )
     print(f"  Product embeddings: {product_embeddings.shape}")
+    
+    embeds_out = output_dir / "product_embeddings.pt"
+    print(f"  Saving product embeddings to {embeds_out}...")
+    torch.save({
+        "pids": encoded_pids,
+        "embeddings": torch.tensor(product_embeddings)
+    }, embeds_out)
 
     # ---- Build per-section indices ----
     print("\n[3/5] Building per-section product indices...")
@@ -551,21 +546,35 @@ def main(cfg: InditexConfig) -> None:
             product_to_desc_upper, category_names, category_embeddings, device,
             top_k_per_crop=TOP_K_PER_CROP,
             category_boost=CATEGORY_BOOST,
-            max_products=MAX_PRODUCTS,
+            max_products=MAX_PRODUCTS * 4,
             max_per_category=MAX_PER_CATEGORY,
             bundle_to_gender=bundle_to_gender,
             product_to_gender=product_to_gender,
             gender_filter=gender_filter,
-            bundle_to_ts=bundle_to_ts,
-            product_to_ts=product_to_ts,
-            ts_rerank_enabled=ts_rerank_enabled,
-            ts_delta_weight=ts_delta_weight,
-            ts_decay_hours=ts_decay_hours,
-            ts_bonus_same_date=ts_bonus_same_date,
-            ts_bonus_same_month=ts_bonus_same_month,
-            ts_bonus_same_quarter=ts_bonus_same_quarter,
-            ts_penalty_diff_quarter=ts_penalty_diff_quarter,
+            bundle_to_article=bundle_to_article,
+            product_to_article=product_to_article,
         )
+
+        if rerank_hubness_enabled:
+            print("  Applying Hubness Penalty (Val)...")
+            val_predictions = apply_hubness_penalty(
+                val_predictions, rerank_hubness_max_ratio, rerank_hubness_penalty
+            )
+            
+        if rerank_heavy_enabled:
+            val_predictions = heavy_model_rerank(
+                predictions=val_predictions,
+                bundle_crops=val_crop_items,
+                products_df=products_df,
+                product_images_dir=str(product_images_dir),
+                device=device,
+                model_name=rerank_heavy_model,
+                pretrained=rerank_heavy_pretrained,
+                heavy_weight=rerank_heavy_weight
+            )
+
+        # Truncate to MAX_PRODUCTS before validation
+        val_predictions = {bid: preds[:MAX_PRODUCTS] for bid, preds in val_predictions.items()}
 
         num_preds = [len(v) for v in val_predictions.values()]
         print(f"  Avg products/bundle: {np.mean(num_preds):.1f} "
@@ -607,21 +616,35 @@ def main(cfg: InditexConfig) -> None:
         product_to_desc_upper, category_names, category_embeddings, device,
         top_k_per_crop=TOP_K_PER_CROP,
         category_boost=CATEGORY_BOOST,
-        max_products=MAX_PRODUCTS,
+        max_products=MAX_PRODUCTS * 4,
         max_per_category=MAX_PER_CATEGORY,
         bundle_to_gender=bundle_to_gender,
         product_to_gender=product_to_gender,
         gender_filter=gender_filter,
-        bundle_to_ts=bundle_to_ts,
-        product_to_ts=product_to_ts,
-        ts_rerank_enabled=ts_rerank_enabled,
-        ts_delta_weight=ts_delta_weight,
-        ts_decay_hours=ts_decay_hours,
-        ts_bonus_same_date=ts_bonus_same_date,
-        ts_bonus_same_month=ts_bonus_same_month,
-        ts_bonus_same_quarter=ts_bonus_same_quarter,
-        ts_penalty_diff_quarter=ts_penalty_diff_quarter,
+        bundle_to_article=bundle_to_article,
+        product_to_article=product_to_article,
     )
+
+    if rerank_hubness_enabled:
+        print("  Applying Hubness Penalty (Test)...")
+        test_predictions = apply_hubness_penalty(
+            test_predictions, rerank_hubness_max_ratio, rerank_hubness_penalty
+        )
+        
+    if rerank_heavy_enabled:
+        test_predictions = heavy_model_rerank(
+            predictions=test_predictions,
+            bundle_crops=test_crop_items,
+            products_df=products_df,
+            product_images_dir=str(product_images_dir),
+            device=device,
+            model_name=rerank_heavy_model,
+            pretrained=rerank_heavy_pretrained,
+            heavy_weight=rerank_heavy_weight
+        )
+        
+    # Truncate to MAX_PRODUCTS for test submission
+    test_predictions = {bid: preds[:MAX_PRODUCTS] for bid, preds in test_predictions.items()}
 
     submission_rows: List[Dict[str, str]] = []
     
@@ -630,10 +653,10 @@ def main(cfg: InditexConfig) -> None:
     
     for bid in test_bundle_ids:
         preds = test_predictions.get(bid, [])
-        used_pids = set(preds)
+        used_pids = set([p for p, _ in preds])
         
         # Add predictions we actually got
-        for pid in preds[:MAX_PRODUCTS]:
+        for pid, _ in preds[:MAX_PRODUCTS]:
             submission_rows.append({"bundle_asset_id": bid, "product_asset_id": pid})
             
         # Pad with fallbacks if we have less than 15
