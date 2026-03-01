@@ -34,6 +34,8 @@ MIN_AREA_RATIO = 0.001
 
 BoxXYXY = Tuple[int, int, int, int]
 ScoredBox = Tuple[int, int, int, int, float]
+# Extended box type that carries the YOLO class label (e.g. 'clothing', 'shoes', …)
+ClassifiedBox = Tuple[int, int, int, int, float, str]
 
 
 def _patch_torch_load_weights_only_false() -> None:
@@ -106,6 +108,34 @@ def extract_boxes_from_result(
     return scored_boxes[:max_boxes_per_image]
 
 
+def extract_classified_boxes_from_result(
+    result: Any,
+    class_names: Dict[int, str],
+    max_boxes_per_image: int = MAX_BOXES_PER_IMAGE,
+    min_area_ratio: float = MIN_AREA_RATIO,
+) -> List[ClassifiedBox]:
+    """Convert YOLO output to sorted XYXY boxes with confidence AND class label."""
+    raw_boxes = getattr(result, "boxes", None)
+    if raw_boxes is None or len(raw_boxes) == 0:
+        return []
+
+    orig_h, orig_w = result.orig_shape[:2]
+    xyxy = raw_boxes.xyxy.detach().cpu().tolist()
+    conf = raw_boxes.conf.detach().cpu().tolist() if hasattr(raw_boxes, "conf") else [1.0] * len(xyxy)
+    cls_ids = raw_boxes.cls.detach().cpu().tolist() if hasattr(raw_boxes, "cls") else [0] * len(xyxy)
+
+    classified_boxes: List[ClassifiedBox] = []
+    for coords, score, cls_id in zip(xyxy, conf, cls_ids):
+        clean_box = _sanitize_box(coords, image_w=orig_w, image_h=orig_h, min_area_ratio=min_area_ratio)
+        if clean_box is None:
+            continue
+        label = class_names.get(int(cls_id), "clothing")
+        classified_boxes.append((*clean_box, float(score), label))
+
+    classified_boxes.sort(key=lambda box: box[4], reverse=True)
+    return classified_boxes[:max_boxes_per_image]
+
+
 @dataclass
 class ClothingYOLODetector:
     """Reusable detector for bundle clothing regions."""
@@ -123,6 +153,8 @@ class ClothingYOLODetector:
             )
         _patch_torch_load_weights_only_false()
         self.model = YOLO(self.model_id)
+        # Cache YOLO class names: {0: 'accessories', 1: 'bags', 2: 'clothing', 3: 'shoes'}
+        self.class_names: Dict[int, str] = getattr(self.model.model, "names", {})
 
     def detect_boxes(self, image_path: Path) -> List[ScoredBox]:
         """Return [x1, y1, x2, y2, score] per detected box."""
@@ -136,6 +168,23 @@ class ClothingYOLODetector:
             return []
         return extract_boxes_from_result(
             results[0],
+            max_boxes_per_image=self.max_boxes_per_image,
+            min_area_ratio=self.min_area_ratio,
+        )
+
+    def detect_classified_boxes(self, image_path: Path) -> List[ClassifiedBox]:
+        """Return [x1, y1, x2, y2, score, class_label] per detected box."""
+        results = self.model.predict(
+            str(image_path),
+            conf=self.conf_threshold,
+            iou=self.iou_threshold,
+            verbose=False,
+        )
+        if not results:
+            return []
+        return extract_classified_boxes_from_result(
+            results[0],
+            class_names=self.class_names,
             max_boxes_per_image=self.max_boxes_per_image,
             min_area_ratio=self.min_area_ratio,
         )
@@ -161,4 +210,25 @@ def detect_boxes_for_assets(
             out[asset_id] = []
             continue
         out[asset_id] = detector.detect_boxes_without_scores(image_path)
+    return out
+
+
+def detect_classified_bundles(
+    bundle_ids: List[str],
+    bundle_image_map: Dict[str, Path],
+    detector: ClothingYOLODetector,
+    show_progress: bool = True,
+) -> Dict[str, List[ClassifiedBox]]:
+    """Run detection for bundles and return asset_id -> classified boxes (with YOLO class)."""
+    iterator = bundle_ids
+    if show_progress:
+        iterator = tqdm(bundle_ids, desc="Detecting clothing (classified)")
+
+    out: Dict[str, List[ClassifiedBox]] = {}
+    for bid in iterator:
+        path = bundle_image_map.get(bid)
+        if path is None or not path.exists():
+            out[bid] = []
+            continue
+        out[bid] = detector.detect_classified_boxes(path)
     return out
