@@ -84,6 +84,7 @@ def _build_pair_features(
     query_vecs: torch.Tensor,
     product_vecs: torch.Tensor,
     feature_cfg: Dict[str, bool],
+    query_extra_vecs: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Build pairwise features: sim, |q-p|, q*p (+ optional extras)."""
     sim = (query_vecs * product_vecs).sum(dim=1, keepdim=True)
@@ -98,6 +99,8 @@ def _build_pair_features(
         parts.append(diff * diff)
     if feature_cfg.get("use_raw_concat", False):
         parts.extend([query_vecs, product_vecs])
+    if feature_cfg.get("use_query_features", False) and query_extra_vecs is not None:
+        parts.append(query_extra_vecs)
 
     return torch.cat(parts, dim=1)
 
@@ -157,10 +160,83 @@ def aggregate_bundle_embedding_map(
     )
 
 
+BOX_FEATURE_NAMES: List[str] = [
+    "num_boxes_log1p",
+    "mean_det_conf",
+    "max_det_conf",
+    "mean_area_ratio",
+    "max_area_ratio",
+    "mean_aspect_ratio",
+    "mean_center_x",
+    "mean_center_y",
+]
+
+
+def build_bundle_box_feature_map(
+    bundle_ids: List[str],
+    bundle_image_map: Dict[str, Path],
+    bundle_to_boxes: Dict[str, List[Tuple[int, int, int, int, float]]],
+) -> Dict[str, np.ndarray]:
+    """Build per-bundle scalar features from detector boxes."""
+    out: Dict[str, np.ndarray] = {}
+    zero = np.zeros((len(BOX_FEATURE_NAMES),), dtype=np.float32)
+
+    for bid in bundle_ids:
+        path = bundle_image_map.get(bid)
+        boxes = bundle_to_boxes.get(bid, [])
+        if path is None or not path.exists():
+            out[bid] = zero.copy()
+            continue
+
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+        except Exception:
+            out[bid] = zero.copy()
+            continue
+
+        if width <= 1 or height <= 1 or not boxes:
+            out[bid] = zero.copy()
+            continue
+
+        area_den = float(width * height)
+        confs: List[float] = []
+        area_ratios: List[float] = []
+        aspects: List[float] = []
+        centers_x: List[float] = []
+        centers_y: List[float] = []
+
+        for x1, y1, x2, y2, conf in boxes:
+            bw = max(1.0, float(x2 - x1))
+            bh = max(1.0, float(y2 - y1))
+            area_ratios.append(float((bw * bh) / area_den))
+            aspects.append(float(bw / bh))
+            centers_x.append(float(((x1 + x2) * 0.5) / width))
+            centers_y.append(float(((y1 + y2) * 0.5) / height))
+            confs.append(float(conf))
+
+        feat = np.asarray(
+            [
+                np.log1p(float(len(boxes))),
+                float(np.mean(confs)),
+                float(np.max(confs)),
+                float(np.mean(area_ratios)),
+                float(np.max(area_ratios)),
+                float(np.mean(aspects)),
+                float(np.mean(centers_x)),
+                float(np.mean(centers_y)),
+            ],
+            dtype=np.float32,
+        )
+        out[bid] = feat
+
+    return out
+
+
 def load_mlp_reranker(
     checkpoint_path: Path,
     device: torch.device,
-) -> Tuple[MLPReranker, Dict[str, bool], float, int]:
+) -> Dict[str, Any]:
     """Load trained MLP reranker checkpoint produced by train_mlp.py."""
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"MLP reranker checkpoint not found: {checkpoint_path}")
@@ -173,6 +249,7 @@ def load_mlp_reranker(
     hidden_dims = [int(v) for v in payload.get("hidden_dims", [512, 128])]
     dropout = float(payload.get("dropout", 0.2))
     embedding_dim = int(payload.get("embedding_dim", 0))
+    query_extra_dim = int(payload.get("query_extra_dim", 0))
     feature_cfg_raw = payload.get("feature_config", {})
     if model_state is None or input_dim <= 0:
         raise ValueError(
@@ -184,13 +261,31 @@ def load_mlp_reranker(
         "use_elem_product": bool(feature_cfg_raw.get("use_elem_product", True)),
         "use_sq_diff": bool(feature_cfg_raw.get("use_sq_diff", False)),
         "use_raw_concat": bool(feature_cfg_raw.get("use_raw_concat", False)),
+        "use_query_features": bool(feature_cfg_raw.get("use_query_features", query_extra_dim > 0)),
     }
     blend_alpha = float(payload.get("blend_alpha", 0.2))
+    query_extra_mean = payload.get("query_extra_mean")
+    query_extra_std = payload.get("query_extra_std")
+    query_extra_names = payload.get("query_extra_names", [])
+    if query_extra_mean is not None:
+        query_extra_mean = np.asarray(query_extra_mean, dtype=np.float32)
+    if query_extra_std is not None:
+        query_extra_std = np.asarray(query_extra_std, dtype=np.float32)
+    query_extra_names = [str(x) for x in query_extra_names] if query_extra_names is not None else []
 
     model = MLPReranker(input_dim=input_dim, hidden_dims=hidden_dims, dropout=dropout).to(device)
     model.load_state_dict(model_state, strict=True)
     model.eval()
-    return model, feature_cfg, blend_alpha, embedding_dim
+    return {
+        "model": model,
+        "feature_cfg": feature_cfg,
+        "blend_alpha": blend_alpha,
+        "embedding_dim": embedding_dim,
+        "query_extra_dim": query_extra_dim,
+        "query_extra_mean": query_extra_mean,
+        "query_extra_std": query_extra_std,
+        "query_extra_names": query_extra_names,
+    }
 
 
 @torch.inference_mode()
@@ -204,6 +299,10 @@ def apply_mlp_rerank(
     blend_alpha: float,
     device: torch.device,
     batch_size: int = 4096,
+    query_extra_feature_map: Optional[Dict[str, np.ndarray]] = None,
+    query_extra_mean: Optional[np.ndarray] = None,
+    query_extra_std: Optional[np.ndarray] = None,
+    query_extra_dim: int = 0,
 ) -> Dict[str, List[Tuple[str, float]]]:
     """Rerank candidates using trained MLP over embedding pair features."""
     if not predictions:
@@ -222,6 +321,25 @@ def apply_mlp_rerank(
         if q_emb is None:
             out[bundle_id] = preds
             continue
+        q_extra_tensor: Optional[torch.Tensor] = None
+        if (
+            feature_cfg.get("use_query_features", False)
+            and query_extra_dim > 0
+        ):
+            if query_extra_feature_map is not None and bundle_id in query_extra_feature_map:
+                q_extra = query_extra_feature_map[bundle_id].astype(np.float32)
+            else:
+                q_extra = np.zeros((query_extra_dim,), dtype=np.float32)
+            if q_extra.shape[0] != query_extra_dim:
+                # Keep dimensions consistent with checkpoint expectations.
+                q_extra_fixed = np.zeros((query_extra_dim,), dtype=np.float32)
+                copy_dim = min(query_extra_dim, q_extra.shape[0])
+                q_extra_fixed[:copy_dim] = q_extra[:copy_dim]
+                q_extra = q_extra_fixed
+            if query_extra_mean is not None and query_extra_std is not None:
+                if q_extra.shape[0] == query_extra_mean.shape[0]:
+                    q_extra = (q_extra - query_extra_mean) / np.where(query_extra_std < 1e-6, 1.0, query_extra_std)
+            q_extra_tensor = torch.from_numpy(q_extra).to(device).unsqueeze(0)
 
         # Normalize base scores per bundle for a stable blend with MLP logits.
         base_scores = np.asarray([float(score) for _, score in preds], dtype=np.float32)
@@ -252,7 +370,10 @@ def apply_mlp_rerank(
                 end = min(start + batch_size, len(valid_rows))
                 q_chunk = q_tensor.expand(end - start, -1)
                 p_chunk = prod_vecs[start:end]
-                feats = _build_pair_features(q_chunk, p_chunk, feature_cfg)
+                q_extra_chunk: Optional[torch.Tensor] = None
+                if q_extra_tensor is not None:
+                    q_extra_chunk = q_extra_tensor.expand(end - start, -1)
+                feats = _build_pair_features(q_chunk, p_chunk, feature_cfg, query_extra_vecs=q_extra_chunk)
                 s = model(feats).detach().cpu().numpy().astype(np.float32)
                 scores_chunks.append(s)
 
@@ -760,6 +881,20 @@ def main(cfg: InditexConfig) -> None:
         )
         if agg_bundle_embs.size == 0:
             raise RuntimeError("No aggregated train bundle embeddings could be exported.")
+        train_box_feature_map = build_bundle_box_feature_map(
+            bundle_ids=train_bundle_ids_for_export,
+            bundle_image_map=bundle_image_map,
+            bundle_to_boxes=train_boxes,
+        )
+        agg_query_features = np.stack(
+            [
+                train_box_feature_map.get(
+                    bid, np.zeros((len(BOX_FEATURE_NAMES),), dtype=np.float32)
+                )
+                for bid in agg_bundle_ids
+            ],
+            axis=0,
+        ).astype(np.float32)
 
         out_path = Path(to_absolute_path(train_bundle_embeddings_out))
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -768,27 +903,40 @@ def main(cfg: InditexConfig) -> None:
                 "bundle_ids": agg_bundle_ids,
                 "embeddings": torch.tensor(agg_bundle_embs),
                 "num_crops": torch.tensor(agg_num_crops, dtype=torch.int32),
+                "query_features": torch.tensor(agg_query_features),
+                "query_feature_names": BOX_FEATURE_NAMES,
                 "aggregation": "confidence_weighted_mean_l2norm",
             },
             out_path,
         )
         print(
             f"  Saved train bundle embeddings: {out_path} "
-            f"(shape={agg_bundle_embs.shape}, avg_crops={float(np.mean(agg_num_crops)):.2f})"
+            f"(shape={agg_bundle_embs.shape}, avg_crops={float(np.mean(agg_num_crops)):.2f}, "
+            f"query_features_dim={agg_query_features.shape[1]})"
         )
 
     mlp_reranker: Optional[MLPReranker] = None
     mlp_feature_cfg: Dict[str, bool] = {}
     mlp_blend_alpha = rerank_mlp_blend_alpha_cfg
+    mlp_query_extra_dim = 0
+    mlp_query_extra_mean: Optional[np.ndarray] = None
+    mlp_query_extra_std: Optional[np.ndarray] = None
     if rerank_mlp_enabled:
         if not rerank_mlp_checkpoint:
             raise ValueError("infer.rerank_mlp_enabled=true requires infer.rerank_mlp_checkpoint")
         mlp_checkpoint_path = Path(to_absolute_path(rerank_mlp_checkpoint))
         print(f"\n[2b/5] Loading MLP reranker from {mlp_checkpoint_path}...")
-        mlp_reranker, mlp_feature_cfg, ckpt_blend_alpha, mlp_emb_dim = load_mlp_reranker(
+        mlp_ckpt = load_mlp_reranker(
             checkpoint_path=mlp_checkpoint_path,
             device=device,
         )
+        mlp_reranker = mlp_ckpt["model"]
+        mlp_feature_cfg = mlp_ckpt["feature_cfg"]
+        ckpt_blend_alpha = float(mlp_ckpt["blend_alpha"])
+        mlp_emb_dim = int(mlp_ckpt["embedding_dim"])
+        mlp_query_extra_dim = int(mlp_ckpt.get("query_extra_dim", 0))
+        mlp_query_extra_mean = mlp_ckpt.get("query_extra_mean")
+        mlp_query_extra_std = mlp_ckpt.get("query_extra_std")
         if mlp_emb_dim > 0 and mlp_emb_dim != int(product_embeddings.shape[1]):
             raise ValueError(
                 f"MLP embedding_dim mismatch: checkpoint={mlp_emb_dim} "
@@ -798,7 +946,7 @@ def main(cfg: InditexConfig) -> None:
             mlp_blend_alpha = ckpt_blend_alpha
         print(
             f"  MLP rerank enabled | blend_alpha={mlp_blend_alpha:.4f} "
-            f"| batch_size={rerank_mlp_batch_size}"
+            f"| batch_size={rerank_mlp_batch_size} | query_extra_dim={mlp_query_extra_dim}"
         )
 
     # ---- Build per-section indices ----
@@ -842,6 +990,13 @@ def main(cfg: InditexConfig) -> None:
 
         if rerank_mlp_enabled and mlp_reranker is not None:
             print("  Applying MLP Reranker (Val)...")
+            val_query_extra_map: Optional[Dict[str, np.ndarray]] = None
+            if mlp_query_extra_dim > 0:
+                val_query_extra_map = build_bundle_box_feature_map(
+                    bundle_ids=val_bundle_ids,
+                    bundle_image_map=bundle_image_map,
+                    bundle_to_boxes=val_boxes,
+                )
             val_predictions = apply_mlp_rerank(
                 predictions=val_predictions,
                 bundle_crop_embeddings=val_crop_embs,
@@ -852,6 +1007,10 @@ def main(cfg: InditexConfig) -> None:
                 blend_alpha=mlp_blend_alpha,
                 device=device,
                 batch_size=rerank_mlp_batch_size,
+                query_extra_feature_map=val_query_extra_map,
+                query_extra_mean=mlp_query_extra_mean,
+                query_extra_std=mlp_query_extra_std,
+                query_extra_dim=mlp_query_extra_dim,
             )
 
         if rerank_hubness_enabled:
@@ -926,6 +1085,13 @@ def main(cfg: InditexConfig) -> None:
 
     if rerank_mlp_enabled and mlp_reranker is not None:
         print("  Applying MLP Reranker (Test)...")
+        test_query_extra_map: Optional[Dict[str, np.ndarray]] = None
+        if mlp_query_extra_dim > 0:
+            test_query_extra_map = build_bundle_box_feature_map(
+                bundle_ids=test_bundle_ids,
+                bundle_image_map=bundle_image_map,
+                bundle_to_boxes=test_boxes,
+            )
         test_predictions = apply_mlp_rerank(
             predictions=test_predictions,
             bundle_crop_embeddings=test_crop_embs,
@@ -936,6 +1102,10 @@ def main(cfg: InditexConfig) -> None:
             blend_alpha=mlp_blend_alpha,
             device=device,
             batch_size=rerank_mlp_batch_size,
+            query_extra_feature_map=test_query_extra_map,
+            query_extra_mean=mlp_query_extra_mean,
+            query_extra_std=mlp_query_extra_std,
+            query_extra_dim=mlp_query_extra_dim,
         )
 
     if rerank_hubness_enabled:
