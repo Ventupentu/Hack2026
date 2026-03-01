@@ -33,14 +33,18 @@ class OpenCLIPMultimodalEncoder(nn.Module):
     def __init__(self, clip_model: nn.Module) -> None:
         super().__init__()
         self.clip_model = clip_model
+        # CLIP-style learnable temperature: logits are scaled by exp(logit_scale).
+        self.logit_scale = nn.Parameter(torch.ones([]) * math.log(1.0 / 0.07))
 
     def forward(self, images: torch.Tensor, text: Optional[torch.Tensor] = None) -> torch.Tensor:
+        image_features = self.clip_model.encode_image(images)
         if text is not None:
-            image_features = self.clip_model.encode_image(images)
             text_features = self.clip_model.encode_text(text)
-            # Combine vision and text for the product representation
+            # Normalize modalities before fusion to avoid one dominating by magnitude.
+            image_features = F.normalize(image_features, p=2, dim=-1)
+            text_features = F.normalize(text_features, p=2, dim=-1)
             return image_features + text_features
-        return self.clip_model.encode_image(images)
+        return image_features
 
 
 def set_seed(seed: int) -> None:
@@ -329,7 +333,7 @@ def crop_with_box(image: Image.Image, box: BoxXYXY) -> Image.Image:
 
 
 class BundlePositiveDataset(Dataset):
-    """One training sample per detected bundle region (or full image fallback)."""
+    """One sample per (bundle region, positive product) pair."""
 
     def __init__(
         self,
@@ -341,6 +345,7 @@ class BundlePositiveDataset(Dataset):
         product_transform: Callable[[Image.Image], torch.Tensor],
         tokenizer: Any,
         bundle_to_boxes: Optional[Dict[str, List[BoxXYXY]]] = None,
+        max_positives: int = 0,
     ) -> None:
         self.bundle_ids = sorted(bundle_to_products.keys())
         self.bundle_to_image = bundle_to_image
@@ -351,22 +356,27 @@ class BundlePositiveDataset(Dataset):
         self.product_transform = product_transform
         self.tokenizer = tokenizer
         self.bundle_to_boxes = bundle_to_boxes or {}
-        self.samples: List[Tuple[str, Optional[BoxXYXY]]] = []
+        self.max_positives = max_positives
+        self.samples: List[Tuple[str, Optional[BoxXYXY], str, Tuple[str, ...]]] = []
         for bundle_id in self.bundle_ids:
             boxes = self.bundle_to_boxes.get(bundle_id, [])
-            if boxes:
-                self.samples.extend((bundle_id, box) for box in boxes)
-            else:
-                self.samples.append((bundle_id, None))
+            candidate_boxes: List[Optional[BoxXYXY]] = boxes if boxes else [None]
+            positive_ids = self.bundle_to_products[bundle_id]
+            if self.max_positives > 0:
+                positive_ids = positive_ids[: self.max_positives]
+            if not positive_ids:
+                continue
+            positive_ids_tuple = tuple(positive_ids)
+            for box in candidate_boxes:
+                for product_id in positive_ids_tuple:
+                    self.samples.append((bundle_id, box, product_id, positive_ids_tuple))
         self.num_unique_bundles = len(self.bundle_ids)
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
-        bundle_id, crop_box = self.samples[idx]
-        product_ids = self.bundle_to_products[bundle_id]
-        product_id = random.choice(product_ids)
+        bundle_id, crop_box, product_id, positive_ids = self.samples[idx]
         bundle_img = open_image_safe(self.bundle_to_image[bundle_id])
         product_img = open_image_safe(self.product_to_image[product_id])
         if bundle_img is None or product_img is None:
@@ -376,6 +386,7 @@ class BundlePositiveDataset(Dataset):
         out = {
             "bundle_id": bundle_id,
             "product_id": product_id,
+            "positive_product_ids": positive_ids,
             "bundle_img": self.bundle_transform(bundle_img),
             "product_img": self.product_transform(product_img),
         }
@@ -461,6 +472,65 @@ def collate_skip_none(batch: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dic
         else:
             out[key] = values
     return out
+
+
+def build_soft_targets(
+    product_ids: Sequence[str],
+    positive_product_ids: Optional[Sequence[Sequence[str]]],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Build row-normalized soft targets from in-batch product matches."""
+    batch_size = len(product_ids)
+    targets = torch.zeros((batch_size, batch_size), dtype=dtype, device=device)
+    pid_to_cols: Dict[str, List[int]] = defaultdict(list)
+    for col, pid in enumerate(product_ids):
+        pid_to_cols[str(pid)].append(col)
+
+    for row, pid in enumerate(product_ids):
+        positives: List[str] = []
+        if positive_product_ids is not None and row < len(positive_product_ids):
+            positives = [str(v) for v in positive_product_ids[row] if str(v)]
+        if not positives:
+            positives = [str(pid)]
+
+        for pos_pid in positives:
+            for col in pid_to_cols.get(pos_pid, []):
+                targets[row, col] = 1.0
+
+        if float(targets[row].sum().item()) == 0.0:
+            targets[row, row] = 1.0
+
+    denom = targets.sum(dim=1, keepdim=True).clamp_min(1.0)
+    return targets / denom
+
+
+def soft_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """Cross-entropy for probability targets."""
+    log_probs = F.log_softmax(logits, dim=1)
+    return -(targets * log_probs).sum(dim=1).mean()
+
+
+def hard_negative_margin_loss(
+    sims: torch.Tensor,
+    targets: torch.Tensor,
+    top_k: int,
+    margin: float,
+) -> torch.Tensor:
+    """Margin loss against hardest in-batch negatives."""
+    if top_k <= 0 or sims.shape[1] <= 1:
+        return sims.new_zeros(())
+
+    k = min(top_k, sims.shape[1] - 1)
+    pos_scores = (sims * targets).sum(dim=1, keepdim=True)
+    neg_sims = sims.masked_fill(targets > 0, float("-inf"))
+    valid_rows = torch.isfinite(neg_sims).any(dim=1)
+    if not bool(valid_rows.any()):
+        return sims.new_zeros(())
+
+    hard_neg = torch.topk(neg_sims[valid_rows], k=k, dim=1, largest=True).values
+    pos_scores = pos_scores[valid_rows]
+    return F.relu(hard_neg - pos_scores + margin).mean()
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, total_steps: int) -> LambdaLR:
@@ -661,6 +731,19 @@ def get_core_clip_model(image_model: nn.Module) -> nn.Module:
     return image_model.clip_model
 
 
+def get_logit_scale_parameter(image_model: nn.Module) -> torch.Tensor:
+    """Return learnable logit_scale, handling DataParallel wrappers."""
+    if isinstance(image_model, nn.DataParallel):
+        return image_model.module.logit_scale
+    return image_model.logit_scale
+
+
+def get_encoder_state(image_model: nn.Module) -> Dict[str, float]:
+    """Return extra encoder state not part of raw CLIP weights."""
+    logit_scale = float(get_logit_scale_parameter(image_model).detach().cpu().item())
+    return {"logit_scale": logit_scale}
+
+
 def save_checkpoint(
     path: Path,
     model: nn.Module,
@@ -669,10 +752,12 @@ def save_checkpoint(
     epoch: int,
     best_metric: float,
     cfg: InditexConfig,
+    encoder_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save checkpoint state."""
     payload = {
         "model": model.state_dict(),
+        "encoder": encoder_state or {},
         "optimizer": optimizer.state_dict(),
         "scaler": scaler.state_dict() if scaler is not None else None,
         "epoch": epoch,
@@ -722,6 +807,12 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         "hf-hub:Marqo/marqo-fashionSigLIP"
     )
     tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
+    if params.grad_checkpointing:
+        if hasattr(clip_model, "set_grad_checkpointing"):
+            clip_model.set_grad_checkpointing(True)
+            print("Enabled OpenCLIP gradient checkpointing.")
+        else:
+            print("Warning: grad_checkpointing requested, but model has no set_grad_checkpointing().")
 
     clip_model = clip_model.to(device)
     image_model: nn.Module = OpenCLIPMultimodalEncoder(clip_model).to(device)
@@ -781,6 +872,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         product_transform=preprocess_train,
         tokenizer=tokenizer,
         bundle_to_boxes=train_bundle_to_boxes,
+        max_positives=params.max_positives,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -792,14 +884,12 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         drop_last=False,
     )
 
-    optimizer = AdamW(core_model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
+    optimizer = AdamW(image_model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
     updates_per_epoch = max(1, math.ceil(len(train_loader) / params.grad_accum))
     scheduler = build_scheduler(optimizer, total_steps=params.epochs * updates_per_epoch)
     scaler: Optional[torch.cuda.amp.GradScaler] = (
         torch.cuda.amp.GradScaler(enabled=True) if params.amp and device.type == "cuda" else None
     )
-    temperature = 0.07
-
     best_recall = -1.0
     start_epoch = 1
 
@@ -828,18 +918,27 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
     val_boxes = sum(len(v) for v in (val_bundle_to_boxes or {}).values())
     print(
         f"Train bundles: {train_dataset.num_unique_bundles} | "
-        f"Train samples (boxes): {len(train_dataset)} | Products indexed: {len(product_to_image)}"
+        f"Train samples (boxes x positives): {len(train_dataset)} | Products indexed: {len(product_to_image)}"
     )
     print(
         f"Use bundle boxes: {bool(params.use_bundle_boxes)} | "
         f"Detected train boxes: {train_boxes} | Detected val boxes: {val_boxes}"
     )
     print(f"Device: {device} | AMP: {bool(scaler is not None)} | multi_gpu={len(used_gpu_ids) >= 2}")
+    print(
+        "Loss config: "
+        f"soft_targets={bool(params.use_soft_targets)} "
+        f"learnable_temperature={bool(params.learnable_temperature)} "
+        f"mine_every={params.mine_every} hard_neg_top_k={params.hard_neg_top_k} "
+        f"max_hard_negatives={params.max_hard_negatives}"
+    )
 
     for epoch in range(start_epoch, params.epochs + 1):
         epoch_start = time.time()
         image_model.train()
         running_loss = 0.0
+        running_hard_neg = 0.0
+        running_logit_scale = 0.0
         count_steps = 0
         optimizer.zero_grad(set_to_none=True)
 
@@ -851,6 +950,8 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
             product_imgs = batch["product_img"].to(device, non_blocking=True)
             if bundle_imgs.shape[0] < 2:
                 continue
+            batch_product_ids = [str(pid) for pid in batch.get("product_id", [])]
+            batch_positive_ids = batch.get("positive_product_ids")
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
                 bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
@@ -874,7 +975,14 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                         if bundle_ids_list[i] == bundle_ids_list[j]:
                             pos_mask[i, j] = True
                 
-                logits = (bundle_emb @ product_emb.T) / temperature
+                # Retrieve logit scale (temperature) from params if available, else default to fixed scalar
+                # Here we use the learnable scale if configured, falling back to a fixed constant
+                if params.learnable_temperature:
+                    logit_scale = get_logit_scale_parameter(image_model).exp().clamp(max=100.0)
+                else:
+                    logit_scale = torch.tensor(1.0 / 0.07, device=device)
+                    
+                logits = (bundle_emb @ product_emb.T) * logit_scale
                 
                 # Multi-positive cross entropy loss
                 # Normalize target distribution so row sums = 1
@@ -908,17 +1016,25 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
             loss_item = float(loss.item() * params.grad_accum)
             running_loss += loss_item
+            # For the main branch implementation, hard negative loss is 0
+            running_hard_neg += 0.0
+            running_logit_scale += float(logit_scale.detach().item()) if isinstance(logit_scale, torch.Tensor) else float(logit_scale)
             count_steps += 1
 
             if step % params.log_every == 0:
                 avg_loss = running_loss / max(1, count_steps)
+                avg_hard_neg = running_hard_neg / max(1, count_steps)
+                avg_logit_scale = running_logit_scale / max(1, count_steps)
                 lr_now = optimizer.param_groups[0]["lr"]
                 print(
-                    f"[epoch {epoch} step {step}] loss={avg_loss:.5f} lr={lr_now:.7f} "
+                    f"[epoch {epoch} step {step}] loss={avg_loss:.5f} hard_neg={avg_hard_neg:.5f} "
+                    f"logit_scale={avg_logit_scale:.3f} lr={lr_now:.7f} "
                     f"bs={bundle_imgs.shape[0]}"
                 )
 
         train_loss = running_loss / max(1, count_steps)
+        train_hard_neg = running_hard_neg / max(1, count_steps)
+        avg_logit_scale_epoch = running_logit_scale / max(1, count_steps)
         recall_val, pos_dist = validate_retrieval(
             model=image_model,
             preprocess_val=preprocess_val,
@@ -938,12 +1054,17 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         epoch_time = time.time() - epoch_start
         lr_now = optimizer.param_groups[0]["lr"]
 
-        print(f"Epoch {epoch}: train_loss={train_loss:.6f} recall@{params.recall_k}={recall_val:.6f}")
+        print(
+            f"Epoch {epoch}: train_loss={train_loss:.6f} hard_neg={train_hard_neg:.6f} "
+            f"logit_scale={avg_logit_scale_epoch:.3f} recall@{params.recall_k}={recall_val:.6f}"
+        )
         print(f"Val #positives per bundle distribution: {pos_dist}")
 
         metric_row = {
             "epoch": epoch,
             "loss_train": train_loss,
+            "hard_neg_train": train_hard_neg,
+            "logit_scale": avg_logit_scale_epoch,
             f"recall@{params.recall_k}": recall_val,
             "lr": lr_now,
             "epoch_seconds": epoch_time,
@@ -959,6 +1080,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 epoch=epoch,
                 best_metric=best_recall,
                 cfg=cfg,
+                encoder_state=get_encoder_state(image_model),
             )
 
         if recall_val > best_recall:
@@ -971,6 +1093,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 epoch=epoch,
                 best_metric=best_recall,
                 cfg=cfg,
+                encoder_state=get_encoder_state(image_model),
             )
 
     print(f"Training complete. Best recall@{params.recall_k}: {best_recall:.6f}")

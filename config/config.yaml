@@ -12,14 +12,35 @@ params:
   num_workers: 4
   device: cuda
   model_name: openclip_marqo_siglip
+<<<<<<< Updated upstream
+=======
+  grlite_model_name: "srpone/gr-lite"
+  grlite_input_size: 518
+  grlite_feature_dim: 256
+  grlite_temperature: 0.07
+  grlite_val_ratio: 0.1
+  grlite_resume_checkpoint: ""
+  grlite_tune_mode: full
+  grlite_train_last_n_layers: 2
+  grlite_unfreeze_layernorm: true
+  grlite_use_lora: false
+  grlite_lora_r: 8
+  grlite_lora_alpha: 16.0
+  grlite_lora_dropout: 0.05
+  grlite_lora_target_modules: "q_proj,v_proj"
+  grlite_lora_last_n_layers: 0
+>>>>>>> Stashed changes
   multi_gpu: false
   gpu_ids: "0"
   amp: true
   grad_accum: 4
+  grad_checkpointing: false
   log_every: 50
   save_every: 1
   max_val_k: 200
   recall_k: 15
+  use_soft_targets: true
+  learnable_temperature: true
   use_bundle_boxes: true
   bbox_model_id: kesimeg/yolov8n-clothing-detection
   bbox_conf_threshold: 0.25
@@ -32,6 +53,8 @@ params:
   hard_neg_top_k: 16
   max_hard_negatives: 2
   max_positives: 4
+  hard_neg_margin: 0.2
+  hard_neg_weight: 0.25
 
 infer:
   checkpoint_path: ""

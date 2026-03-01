@@ -72,5 +72,3 @@ python -m src.train
 # run inference with your trained checkpoint
 python -m src.infer_phase1 infer.checkpoint_path=outputs/<date>/<time>/retrieval_openclip/best.pt
 ```
-
-That is the full flow: prepare data -> train retrieval model -> run inference -> generate submission.

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bundle Finder</title>
+  <style>
+    :root {
+      --bg: #ece9e1;
+      --surface: #fcfbf8;
+      --text: #1b1b1b;
+      --muted: #5f5f5f;
+      --accent: #0f172a;
+      --border: #d8d4cb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Trebuchet MS", "Lucida Sans Unicode", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 10%, #f8f6f0 0%, transparent 32%),
+        radial-gradient(circle at 80% 85%, #ebe5d8 0%, transparent 38%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .panel {
+      width: min(840px, 94vw);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 28px;
+      box-shadow: 0 14px 30px rgba(20, 20, 20, 0.08);
+    }
+
+    h1 {
+      margin: 0;
+      text-align: center;
+      font-size: 1.35rem;
+      letter-spacing: 0.02em;
+    }
+
+    .sub {
+      margin: 10px 0 0;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    form {
+      margin-top: 24px;
+      display: grid;
+      place-items: center;
+    }
+
+    #bundle_image {
+      display: none;
+    }
+
+    #upload_btn {
+      border: 1px solid #0a0a0a;
+      border-radius: 999px;
+      background: linear-gradient(145deg, #1f2937, #0f172a);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      padding: 12px 30px;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      box-shadow: 0 8px 18px rgba(2, 6, 23, 0.24);
+    }
+
+    #upload_btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 24px rgba(2, 6, 23, 0.32);
+    }
+
+    .error {
+      margin-top: 18px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #ef4444;
+      color: #7f1d1d;
+      background: #fee2e2;
+      font-size: 0.9rem;
+      text-align: center;
+    }
+
+    .preview {
+      margin-top: 24px;
+      text-align: center;
+    }
+
+    .preview img {
+      width: 210px;
+      max-width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      object-fit: cover;
+      background: #fff;
+    }
+
+    .results {
+      margin-top: 26px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: #fff;
+    }
+
+    .card img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border-radius: 8px;
+      border: 1px solid #ececec;
+      background: #f7f7f7;
+    }
+
+    .pid {
+      margin: 8px 0 4px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .desc {
+      margin: 0;
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    .score {
+      margin-top: 5px;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>Sube una foto del bundle</h1>
+    <p class="sub">Detecta prendas con <code>best.pt</code> y devuelve los productos parecidos.</p>
+
+    <form id="upload_form" method="post" action="/predict" enctype="multipart/form-data">
+      <input id="bundle_image" name="bundle_image" type="file" accept="image/*" required>
+      <button id="upload_btn" type="button">Subir Imagen</button>
+    </form>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if preview_image %}
+      <section class="preview">
+        <img src="{{ preview_image }}" alt="Bundle subido">
+      </section>
+    {% endif %}
+
+    {% if results %}
+      <section class="results">
+        {% for item in results %}
+          <article class="card">
+            <img src="/product-image/{{ item.product_asset_id }}" alt="{{ item.product_asset_id }}">
+            <p class="pid">{{ item.product_asset_id }}</p>
+            <p class="desc">{{ item.description or "Sin descripcion" }}</p>
+            <p class="score">score: {{ item.score }}</p>
+          </article>
+        {% endfor %}
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    const input = document.getElementById("bundle_image");
+    const button = document.getElementById("upload_btn");
+    const form = document.getElementById("upload_form");
+
+    button.addEventListener("click", () => input.click());
+    input.addEventListener("change", () => {
+      if (input.files.length > 0) form.submit();
+    });
+  </script>
+</body>
+</html>

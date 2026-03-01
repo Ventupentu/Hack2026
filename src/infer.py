@@ -99,6 +99,267 @@ def build_image_map(image_dir: Path) -> Dict[str, Path]:
     return image_map
 
 
+<<<<<<< Updated upstream
+=======
+def parse_gpu_ids(text: str) -> List[int]:
+    """Parse comma-separated GPU ids."""
+    ids: List[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        ids.append(int(token))
+    return ids
+
+
+def torch_load_any(path: Path, map_location: Any) -> Any:
+    """Load torch object across torch versions (weights_only arg compatibility)."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def find_local_grlite_pt(path: Path) -> Optional[Path]:
+    """Resolve local GR-Lite serialized model path."""
+    if path.is_file():
+        return path
+    if not path.is_dir():
+        return None
+    for candidate in ("gr_lite.pt", "gr-lite.pt", "model.pt", "best.pt", "last.pt"):
+        resolved = path / candidate
+        if resolved.exists() and resolved.is_file():
+            return resolved
+    return None
+
+
+def _strip_state_dict_prefix(state_dict: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tensor]:
+    if not prefix:
+        return state_dict
+    if all(key.startswith(prefix) for key in state_dict.keys()):
+        plen = len(prefix)
+        return {key[plen:]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def _as_tensor_state_dict(payload: Any) -> Optional[Dict[str, torch.Tensor]]:
+    if isinstance(payload, dict) and payload and all(isinstance(v, torch.Tensor) for v in payload.values()):
+        return dict(payload)
+    return None
+
+
+def normalize_grlite_state_dict_keys(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Normalize common GR-Lite checkpoint key prefixes to model-native keys."""
+    sd = strip_module_prefix(dict(state_dict))
+    sd = _strip_state_dict_prefix(sd, "base_model.")
+    sd = _strip_state_dict_prefix(sd, "model.model.")
+    sd = _strip_state_dict_prefix(sd, "model.")
+
+    converted: Dict[str, torch.Tensor] = {}
+    for key, value in sd.items():
+        new_key = key
+        if new_key.startswith("layer."):
+            new_key = "layers." + new_key[len("layer."):]
+        elif new_key.startswith("norm."):
+            new_key = "layernorm." + new_key[len("norm."):]
+        converted[new_key] = value
+    return converted
+
+
+class LoRALinear(torch.nn.Module):
+    """Low-rank adapter around a frozen nn.Linear layer."""
+
+    def __init__(self, base: torch.nn.Linear, rank: int, alpha: float, dropout: float) -> None:
+        super().__init__()
+        if rank <= 0:
+            raise ValueError("LoRA rank must be > 0")
+        self.base = base
+        self.rank = int(rank)
+        self.alpha = float(alpha)
+        self.scaling = float(alpha / rank)
+        self.dropout = torch.nn.Dropout(float(dropout)) if dropout > 0 else torch.nn.Identity()
+        self.lora_A = torch.nn.Linear(base.in_features, rank, bias=False)
+        self.lora_B = torch.nn.Linear(rank, base.out_features, bias=False)
+        torch.nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        torch.nn.init.zeros_(self.lora_B.weight)
+        for p in self.base.parameters():
+            p.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base(x) + self.lora_B(self.lora_A(self.dropout(x))) * self.scaling
+
+
+def _extract_layer_id_from_module_name(name: str) -> Optional[int]:
+    parts = name.split(".")
+    for i, part in enumerate(parts):
+        if part == "layers" and i + 1 < len(parts) and parts[i + 1].isdigit():
+            return int(parts[i + 1])
+    return None
+
+
+def _get_parent_and_child_module(root: torch.nn.Module, full_name: str) -> Tuple[torch.nn.Module, str]:
+    parts = full_name.split(".")
+    parent = root
+    for part in parts[:-1]:
+        parent = getattr(parent, part)
+    return parent, parts[-1]
+
+
+def parse_csv_list(text: str) -> List[str]:
+    return [token.strip() for token in str(text).split(",") if token.strip()]
+
+
+def apply_lora_to_model(
+    model: torch.nn.Module,
+    target_modules: Sequence[str],
+    rank: int,
+    alpha: float,
+    dropout: float,
+    last_n_layers: int = 0,
+) -> int:
+    """Replace selected Linear layers with LoRA-wrapped layers."""
+    named_modules = list(model.named_modules())
+    linear_module_names = [name for name, module in named_modules if isinstance(module, torch.nn.Linear)]
+    if not linear_module_names:
+        return 0
+
+    target_tokens = [token.lower() for token in target_modules if token]
+    layer_ids = sorted(
+        {
+            layer_id
+            for layer_id in (_extract_layer_id_from_module_name(name) for name in linear_module_names)
+            if layer_id is not None
+        }
+    )
+    start_layer: Optional[int] = None
+    if last_n_layers > 0 and layer_ids:
+        start_layer = max(0, max(layer_ids) - last_n_layers + 1)
+
+    replaced = 0
+    for name, module in named_modules:
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        lname = name.lower()
+        if target_tokens and not any(token in lname for token in target_tokens):
+            continue
+        layer_id = _extract_layer_id_from_module_name(name)
+        if start_layer is not None and layer_id is not None and layer_id < start_layer:
+            continue
+        parent, child = _get_parent_and_child_module(model, name)
+        setattr(parent, child, LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout))
+        replaced += 1
+    return replaced
+
+
+def build_eomt_model_from_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    device: torch.device,
+    input_size: int,
+) -> torch.nn.Module:
+    """Build EOMT-DINOv3 model and load a GR-Lite-like state_dict into it."""
+    from transformers import EomtDinov3Config, EomtDinov3ForUniversalSegmentation
+
+    converted = normalize_grlite_state_dict_keys(state_dict)
+
+    if "embeddings.cls_token" not in converted:
+        raise RuntimeError(
+            "Could not identify GR-Lite backbone keys in tensor checkpoint "
+            "(missing embeddings.cls_token after prefix conversion)."
+        )
+
+    hidden_size = int(converted["embeddings.cls_token"].shape[-1])
+    patch_size = int(converted["embeddings.patch_embeddings.weight"].shape[-1])
+    num_channels = int(converted["embeddings.patch_embeddings.weight"].shape[1])
+    num_register_tokens = int(converted.get("embeddings.register_tokens", torch.zeros(1, 0, hidden_size)).shape[1])
+    layer_ids = sorted(
+        {
+            int(key.split(".")[1])
+            for key in converted.keys()
+            if key.startswith("layers.") and len(key.split(".")) >= 3 and key.split(".")[1].isdigit()
+        }
+    )
+    if not layer_ids:
+        raise RuntimeError("Could not infer number of layers from state_dict keys.")
+    num_hidden_layers = int(max(layer_ids) + 1)
+    up_proj_key = next((k for k in converted.keys() if k.endswith("mlp.up_proj.weight")), None)
+    if up_proj_key is None:
+        raise RuntimeError("Could not infer intermediate_size (missing mlp.up_proj.weight).")
+    intermediate_size = int(converted[up_proj_key].shape[0])
+    num_attention_heads = int(hidden_size // 64) if hidden_size % 64 == 0 else 16
+    if hidden_size % num_attention_heads != 0:
+        divisors = [d for d in range(32, 7, -1) if hidden_size % d == 0]
+        num_attention_heads = divisors[0] if divisors else 8
+
+    cfg = EomtDinov3Config(
+        hidden_size=hidden_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        intermediate_size=intermediate_size,
+        num_register_tokens=num_register_tokens,
+        patch_size=patch_size,
+        num_channels=num_channels,
+        image_size=input_size,
+    )
+    model = EomtDinov3ForUniversalSegmentation(cfg)
+    missing, unexpected = model.load_state_dict(converted, strict=False)
+    print(
+        "Loaded tensor checkpoint into EOMT-DINOv3 | "
+        f"missing={len(missing)} unexpected={len(unexpected)} "
+        f"layers={num_hidden_layers} hidden={hidden_size} heads={num_attention_heads}"
+    )
+    return model.to(device).eval()
+
+
+def load_grlite_base_model(model_name: str, device: torch.device, input_size: int) -> torch.nn.Module:
+    """Load GR-Lite from transformers repo or serialized .pt fallback."""
+    try:
+        from transformers import AutoConfig, AutoModel
+
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        if hasattr(config, "is_crop"):
+            config.is_crop = False
+        model = AutoModel.from_pretrained(model_name, config=config, trust_remote_code=True)
+        return model.to(device).eval()
+    except Exception as exc:
+        print(f"Transformers loader failed for '{model_name}', trying serialized .pt fallback ({exc})")
+
+    local_ref = find_local_grlite_pt(Path(model_name).expanduser())
+    model_path: Path
+    if local_ref is not None:
+        model_path = local_ref.resolve()
+    else:
+        from huggingface_hub import hf_hub_download
+
+        downloaded = hf_hub_download(repo_id=model_name, filename="gr_lite.pt")
+        model_path = Path(downloaded).resolve()
+
+    loaded = torch_load_any(model_path, map_location=device)
+    if isinstance(loaded, torch.nn.Module):
+        return loaded.to(device).eval()
+    if isinstance(loaded, dict) and "model" in loaded:
+        if isinstance(loaded["model"], torch.nn.Module):
+            return loaded["model"].to(device).eval()
+        state_dict = _as_tensor_state_dict(loaded["model"])
+        if state_dict is not None:
+            return build_eomt_model_from_state_dict(
+                state_dict=state_dict,
+                device=device,
+                input_size=input_size,
+            )
+    state_dict = _as_tensor_state_dict(loaded)
+    if state_dict is not None:
+        return build_eomt_model_from_state_dict(
+            state_dict=state_dict,
+            device=device,
+            input_size=input_size,
+        )
+    raise RuntimeError(
+        f"Unsupported serialized GR-Lite payload type: {type(loaded)} at {model_path}. "
+        "Expected torch.nn.Module or dict with key 'model'."
+    )
+
+
+>>>>>>> Stashed changes
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -334,6 +595,238 @@ def strip_module_prefix(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.
     return {key.replace("module.", "", 1): value for key, value in state_dict.items()}
 
 
+<<<<<<< Updated upstream
+=======
+def resolve_encoder_backend(params: Any, infer_cfg: Any) -> str:
+    """Resolve encoder backend from config aliases."""
+    raw_backend = str(
+        getattr(infer_cfg, "encoder_backend", getattr(params, "model_name", "openclip"))
+    ).strip().lower()
+    if raw_backend in OPENCLIP_BACKENDS:
+        return "openclip"
+    if raw_backend in GRLITE_BACKENDS:
+        return "gr-lite"
+    raise ValueError(
+        f"Unsupported infer.encoder_backend='{raw_backend}'. "
+        "Available: openclip, gr-lite"
+    )
+
+
+def _extract_features_from_outputs(outputs: Any) -> torch.Tensor:
+    """Convert different model output shapes to [B, D] feature tensor."""
+    if isinstance(outputs, torch.Tensor):
+        features = outputs
+    elif hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+        features = outputs.pooler_output
+    elif hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+        features = outputs.last_hidden_state[:, 0]
+    elif isinstance(outputs, dict):
+        if "pooler_output" in outputs and outputs["pooler_output"] is not None:
+            features = outputs["pooler_output"]
+        elif "last_hidden_state" in outputs and outputs["last_hidden_state"] is not None:
+            features = outputs["last_hidden_state"][:, 0]
+        else:
+            raise RuntimeError("Model output dict does not contain usable features.")
+    else:
+        raise RuntimeError(f"Unsupported output type for feature extraction: {type(outputs)}")
+
+    if not isinstance(features, torch.Tensor):
+        features = torch.as_tensor(features)
+    if features.ndim == 1:
+        features = features.unsqueeze(0)
+    if features.ndim == 3:
+        features = features[:, 0]
+    if features.ndim != 2:
+        raise RuntimeError(f"Expected 2D features [B, D], got shape {tuple(features.shape)}")
+    return features
+
+
+class GRLiteTensorEncoder(torch.nn.Module):
+    """Tensor-only GR-Lite wrapper suitable for DataParallel."""
+
+    def __init__(self, base_model: torch.nn.Module) -> None:
+        super().__init__()
+        self.base_model = base_model
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        try:
+            outputs = self.base_model(images)
+        except Exception:
+            if hasattr(self.base_model, "model"):
+                outputs = self.base_model.model(images)
+            else:
+                raise
+        return _extract_features_from_outputs(outputs)
+
+    def search(self, image_paths: Sequence[Image.Image], feature_dim: int = 256):
+        if hasattr(self.base_model, "search"):
+            return self.base_model.search(image_paths=image_paths, feature_dim=feature_dim)
+        raise AttributeError("Underlying GR-Lite model does not provide .search().")
+
+
+def load_encoder(
+    encoder_backend: str,
+    params: Any,
+    infer_cfg: Any,
+    device: torch.device,
+    checkpoint_path: str,
+) -> Tuple[torch.nn.Module, Any, Any, str, List[int]]:
+    """Load image encoder + preprocess according to configured backend."""
+    if encoder_backend == "openclip":
+        if open_clip is None:
+            raise ModuleNotFoundError(
+                "open_clip is required for infer.encoder_backend=openclip. "
+                "Install with: pip install open-clip-torch"
+            )
+        clip_model, _preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
+            "hf-hub:Marqo/marqo-fashionSigLIP"
+        )
+        tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionSigLIP")
+        clip_model = clip_model.to(device).eval()
+
+        if checkpoint_path:
+            ckpt = Path(to_absolute_path(checkpoint_path))
+            if not ckpt.exists():
+                raise FileNotFoundError(f"infer.checkpoint_path does not exist: {ckpt}")
+            payload = torch.load(ckpt, map_location=device)
+            state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+            if not isinstance(state_dict, dict):
+                raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
+            state_dict = strip_module_prefix(state_dict)
+            missing, unexpected = clip_model.load_state_dict(state_dict, strict=False)
+            print(f"Loaded checkpoint: {ckpt}")
+            print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+
+        return clip_model, tokenizer, preprocess_val, "hf-hub:Marqo/marqo-fashionSigLIP", []
+
+    model_ref = str(getattr(infer_cfg, "grlite_model_name", "srpone/gr-lite")).strip()
+    if not model_ref:
+        model_ref = "srpone/gr-lite"
+    input_size = int(getattr(infer_cfg, "grlite_input_size", 518))
+    use_lora = bool(getattr(params, "grlite_use_lora", False))
+    lora_rank = int(getattr(params, "grlite_lora_r", 8))
+    lora_alpha = float(getattr(params, "grlite_lora_alpha", 16.0))
+    lora_dropout = float(getattr(params, "grlite_lora_dropout", 0.05))
+    lora_target_modules = parse_csv_list(getattr(params, "grlite_lora_target_modules", "q_proj,v_proj"))
+    lora_last_n_layers = int(getattr(params, "grlite_lora_last_n_layers", 0))
+
+    print(f"Loading GR-Lite encoder from: {model_ref}")
+    base_model = load_grlite_base_model(model_name=model_ref, device=device, input_size=input_size)
+    if use_lora:
+        replaced = apply_lora_to_model(
+            model=base_model,
+            target_modules=lora_target_modules,
+            rank=lora_rank,
+            alpha=lora_alpha,
+            dropout=lora_dropout,
+            last_n_layers=lora_last_n_layers,
+        )
+        if replaced <= 0:
+            raise RuntimeError(
+                "params.grlite_use_lora=true but no Linear layers matched params.grlite_lora_target_modules."
+            )
+        print(
+            "Applied LoRA adapters (inference) | "
+            f"modules={replaced} rank={lora_rank} alpha={lora_alpha} dropout={lora_dropout} "
+            f"targets={','.join(lora_target_modules)} last_n_layers={lora_last_n_layers}"
+        )
+
+    if checkpoint_path:
+        ckpt = Path(to_absolute_path(checkpoint_path))
+        if not ckpt.exists():
+            raise FileNotFoundError(f"infer.checkpoint_path does not exist: {ckpt}")
+        payload = torch_load_any(ckpt, map_location=device)
+        state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+        if not isinstance(state_dict, dict):
+            raise RuntimeError(f"Invalid checkpoint format at {ckpt}")
+        state_dict = normalize_grlite_state_dict_keys(state_dict)
+        checkpoint_has_lora = any(".lora_A." in key or ".lora_B." in key for key in state_dict.keys())
+        if checkpoint_has_lora and not use_lora:
+            raise RuntimeError(
+                "Checkpoint contains LoRA weights but params.grlite_use_lora=false. "
+                "Set params.grlite_use_lora=true and matching LoRA params."
+            )
+        missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded GR-Lite checkpoint: {ckpt}")
+        print(f"Checkpoint compatibility | missing={len(missing)} unexpected={len(unexpected)}")
+
+    model: torch.nn.Module = GRLiteTensorEncoder(base_model).to(device).eval()
+    used_gpu_ids: List[int] = []
+    if device.type == "cuda" and bool(getattr(params, "multi_gpu", False)) and torch.cuda.device_count() > 1:
+        candidate_ids = parse_gpu_ids(str(getattr(params, "gpu_ids", "0,1")))
+        max_idx = torch.cuda.device_count() - 1
+        used_gpu_ids = [gid for gid in candidate_ids if 0 <= gid <= max_idx]
+        if len(used_gpu_ids) >= 2:
+            model = torch.nn.DataParallel(model, device_ids=used_gpu_ids)
+            print(f"Using GR-Lite DataParallel on GPUs: {used_gpu_ids}")
+        else:
+            print(
+                "Warning: multi_gpu enabled but fewer than 2 valid gpu_ids found. "
+                f"Available=0..{max_idx}, requested={candidate_ids}. Using single GPU."
+            )
+
+    preprocess_val = transforms.Compose(
+        [
+            transforms.Resize((input_size, input_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ]
+    )
+    return model, None, preprocess_val, model_ref, used_gpu_ids
+
+
+def encode_images(
+    encoder_backend: str,
+    image_model: torch.nn.Module,
+    imgs: torch.Tensor,
+    device: torch.device,
+    amp: bool,
+    tokenizer: Any = None,
+    texts: Optional[Sequence[str]] = None,
+    pil_images: Optional[Sequence[Image.Image]] = None,
+    grlite_feature_dim: int = 256,
+) -> torch.Tensor:
+    """Encode a batch and return normalized [B, D] embeddings."""
+    if encoder_backend == "openclip":
+        amp_enabled = amp and device.type == "cuda"
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            image_feats = image_model.encode_image(imgs).float()
+            if tokenizer is not None and texts is not None:
+                text_rows = [i for i, txt in enumerate(texts) if isinstance(txt, str) and txt.strip()]
+                if text_rows:
+                    tokens = tokenizer([texts[i] for i in text_rows]).to(device, non_blocking=True)
+                    text_feats = image_model.encode_text(tokens).float()
+                    image_feats[text_rows] = image_feats[text_rows] + text_feats
+        return F.normalize(image_feats, p=2, dim=1)
+
+    if pil_images and hasattr(image_model, "search"):
+        try:
+            rgb_images = [img.convert("RGB") if img.mode != "RGB" else img for img in pil_images]
+            _, embeddings = image_model.search(image_paths=rgb_images, feature_dim=grlite_feature_dim)
+            image_feats = torch.as_tensor(embeddings, device=device, dtype=torch.float32)
+            if image_feats.ndim == 1:
+                image_feats = image_feats.unsqueeze(0)
+            return F.normalize(image_feats, p=2, dim=1)
+        except Exception:
+            # Fallback to direct forward pass when .search() is not available or fails.
+            pass
+
+    with torch.no_grad():
+        try:
+            outputs = image_model(imgs)
+        except Exception:
+            if hasattr(image_model, "model"):
+                outputs = image_model.model(imgs)
+            else:
+                raise
+        image_feats = _extract_features_from_outputs(outputs).float()
+    return F.normalize(image_feats, p=2, dim=1)
+
+
+>>>>>>> Stashed changes
 @torch.inference_mode()
 def encode_product_index(
     clip_model: torch.nn.Module,
