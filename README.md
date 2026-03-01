@@ -1,205 +1,226 @@
 # Hack2026
 
-## Objetivo del Proyecto
-Construir un modelo que prediga coincidencias de productos para bundles de moda.
+Repositorio para retrieval de productos de moda a partir de imagenes de bundles.
 
-Debes entrenar usando los CSV de entrenamiento proporcionados y generar la salida final completando los valores `product_asset_id` para los bundles de test.
+Actualizado con inspeccion local del repo en fecha **2026-02-28**.
 
-## Resumen del Dataset
+## Resumen
 
-### 1) `data/bundles_dataset.csv`
-Catalogo de bundles (lado de consulta).
+El objetivo es predecir `product_asset_id` para cada `bundle_asset_id` de test, con ranking de hasta 15 productos por bundle.
 
-Columnas:
-- `bundle_asset_id`: Identificador unico de la imagen del bundle.
-- `bundle_id_section`: ID de seccion/categoria del bundle.
-- `bundle_image_url`: URL de la imagen del bundle.
+El stack actual esta centrado en **OpenCLIP (Marqo Fashion SigLIP)**, con variantes de inferencia que combinan:
 
-### 2) `data/product_dataset.csv`
-Catalogo de productos (lado candidato).
+- deteccion YOLO de prendas en bundles,
+- retrieval por similitud coseno,
+- filtros de post-procesado (gender, categoria, umbral de score),
+- reranking opcional con timestamps extraidos de URLs.
 
-Columnas:
-- `product_asset_id`: Identificador unico de la imagen del producto.
-- `product_image_url`: URL de la imagen del producto.
-- `product_description`: Descripcion textual del producto.
+## Estado Actual del Workspace
 
-### 3) `data/bundles_product_match_train.csv`
-Pares supervisados de entrenamiento (coincidencias reales).
+Snapshot local detectado en este repo:
 
-Columnas:
-- `bundle_asset_id`
-- `product_asset_id`
+- `data/bundles_dataset.csv`: 2,331 bundles
+- `data/product_dataset.csv`: 27,688 productos
+- `data/bundles_product_match_train.csv`: 6,493 relaciones train
+- `data/bundles_product_match_test.csv`: 455 bundles de test (sin IDs faltantes respecto al catalogo)
+- imagenes locales descargadas: 2,331 bundles y 27,688 productos
+- train (unicos): 1,876 bundles, 4,012 productos
+- promedio de productos por bundle en train: 3.461 (min=1, max=11)
 
-Cada fila es una coincidencia valida bundle-producto usada para entrenamiento.
+Artefactos de analisis presentes en `outputs/`:
 
-### 4) `data/bundles_product_match_test.csv`
-Plantilla de test para la prediccion final.
+- `ts_date_alignment_report.csv` (1,876 bundles analizados)
+- `category_section_consistency.csv`
+- `category_section_summary.json`
 
-Columnas:
-- `bundle_asset_id`: Bundle a evaluar.
-- `product_asset_id`: Campo vacio que debes completar con las predicciones del modelo.
+## Estructura Relevante
 
-## Como se Conectan los Archivos
-- Une los IDs de bundle de train/test con `bundles_dataset.csv` usando `bundle_asset_id`.
-- Une los IDs de producto (predichos o de train) con `product_dataset.csv` usando `product_asset_id`.
-- La senal de entrenamiento viene de `bundles_product_match_train.csv`.
-- La entrega final se basa en `bundles_product_match_test.csv`.
+- `src/train.py`: entrypoint Hydra para entrenamiento OpenCLIP.
+- `src/models/retrieval_openclip.py`: loop de train/val, checkpoints y `metrics.jsonl`.
+- `src/infer.py`: inferencia principal (OpenCLIP + YOLO + filtros).
+- `src/new_infer.py`: variante "v8" per-crop con TTA y FAISS opcional.
+- `src/infer_phase1.py`: variante con filtrado por seccion + zero-shot por categoria.
+- `src/infer_top1.py`: variante top-1 por crop (salidas mas cortas por bundle).
+- `src/infer_openclip.py`: inferencia simple por argparse desde checkpoint.
+- `src/detection.py`: wrapper de YOLO clothing detection.
+- `src/utils/add_gender.py`: genera `product_dataset_with_gender.csv`.
+- `src/utils/check_link_timestamps.py`: reporte de alineacion temporal bundle-producto.
+- `preprocess_data.py`: validacion/split/manifests/stats.
+- `offline_augment.py`: augmentacion offline para bundles/productos.
 
-## Reglas de Entrega Final (Importante)
+## Instalacion
 
-### Proposito
-Usa este dataset para entregar tus resultados finales.
+Dependencias base:
 
-### Columnas Obligatorias
-- `bundle_asset_id`: Identificador de la imagen del bundle (grupo de productos).
-- `product_asset_id`: Identificador de la imagen del producto. Debes completar esta columna.
+```bash
+pip install -r requirements.txt
+```
 
-### Reglas de Formato
-- Aunque un ejemplo muestre una fila por bundle, el resultado final debe incluir una fila por cada producto reconocido dentro de cada bundle.
-- Varias filas pueden compartir el mismo `bundle_asset_id` (una por producto predicho).
-- Se evaluara un maximo de 15 productos por bundle.
-- Para cada bundle, solo se consideran las primeras 15 filas durante la evaluacion.
+Dependencias usadas por los pipelines avanzados (no incluidas en `requirements.txt`):
 
-## Comportamiento Sugerido de Salida
-- Mantener las filas agrupadas por `bundle_asset_id`.
-- Dentro de cada bundle, ordenar las filas por confianza del modelo (mejor prediccion primero).
-- Limitar las predicciones a un maximo de 15 filas por bundle para cumplir las restricciones de evaluacion.
+```bash
+pip install open_clip_torch ultralyticsplus
+```
 
-## Linea Base: Recuperacion Preentrenada
+Opcional para acelerar retrieval en `src.new_infer.py`:
 
-Este repositorio incluye un baseline simple en `src/infer.py`:
+```bash
+pip install faiss-cpu
+```
 
-- Encoder: modelo preentrenado de `torchvision` (`resnet50` por defecto).
-- Metodo: extrae embeddings normalizados para todos los productos y luego recupera los top-K productos mas cercanos para cada bundle.
-- Validacion: calcula `hit@K` y `recall@K` en una particion aleatoria de validacion por `bundle_asset_id`.
-- Entrega: escribe una fila por producto predicho y limita a 15 productos por bundle.
+## Flujo Recomendado
 
-### Ejecucion
+### 1) Descargar imagenes
+
+```bash
+bash download.sh
+```
+
+### 2) Preprocesar y generar manifests/stats
+
+```bash
+python preprocess_data.py \
+  --skip_download \
+  --out_dir data \
+  --val_ratio 0.1 \
+  --seed 42
+```
+
+Genera/actualiza, entre otros:
+
+- `data/manifests/train_manifest.jsonl`
+- `data/manifests/val_manifest.jsonl`
+- `data/labels.json`
+- `data/label2idx.json`
+- `data/stats.json`
+
+### 3) Generar gender por producto (necesario para train por defecto)
+
+```bash
+python src/utils/add_gender.py
+```
+
+Esto crea `data/product_dataset_with_gender.csv`.
+
+Importante: `src/train.py` usa ese archivo por defecto como `products_manifest`.
+
+### 4) Entrenar
+
+```bash
+python -m src.train
+```
+
+Por defecto usa rutas de `config/files/file.yaml`:
+
+- `data_dir: data`
+- `bundles_images: data/bundle_images`
+- `products_images: data/product_images`
+- `yolo_detections_dir: data/yolo_detections`
+
+Salida de entrenamiento en carpeta Hydra:
+
+- `<hydra_run_dir>/retrieval_openclip/best.pt`
+- `<hydra_run_dir>/retrieval_openclip/epoch_*.pt`
+- `<hydra_run_dir>/retrieval_openclip/metrics.jsonl`
+
+Nota tecnica: actualmente `src/train.py` apunta train y val al mismo CSV (`bundles_product_match_train.csv`).
+
+## Inferencia
+
+### Opcion A: `src.infer` (pipeline principal)
 
 ```bash
 python -m src.infer \
-  --model-name resnet50 \
-  --batch-size 64 \
-  --val-ratio 0.2 \
-  --top-n-submit 15 \
-  --submission-out outputs/test_submission.csv \
-  --metrics-out outputs/val_metrics.json
+  infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt \
+  infer.val_ratio=0.1
 ```
 
-### Salidas principales
+Salida en carpeta Hydra de la corrida:
 
-- `outputs/test_submission.csv`: archivo listo para subir (`bundle_asset_id,product_asset_id`).
-- `outputs/val_metrics.json`: metricas de validacion local y resumen de ejecucion.
+- `test_submission.csv`
+- `val_metrics.json`
 
-## Ejemplo de Salida (Solo Formato)
-
-```csv
-bundle_asset_id,product_asset_id
-B_xxxxx,I_aaaaa
-B_xxxxx,I_bbbbb
-B_yyyyy,I_ccccc
-```
-
-En este ejemplo, el bundle `B_xxxxx` tiene dos productos reconocidos, por eso aparece en dos filas.
-
-## Pipeline de IA Recomendado
-
-Este reto se resuelve mejor como un problema de **recuperacion visual multiobjeto**, no como un clasificador de conjunto cerrado.
-Ademas, cada `product_asset_id` tiene una sola imagen, por lo que el pipeline debe ser robusto a representaciones de producto de vista unica.
-
-### 1) Preparacion de Datos
-- Validar IDs y uniones entre todos los CSV.
-- Construir particiones train/validacion por `bundle_asset_id` (sin fuga de informacion).
-- Generar tablas de metadatos de producto (`product_asset_id`, ruta de imagen, `product_description`).
-
-### 2) Indice de Embeddings de Producto (Offline)
-- Codificar todas las imagenes de productos en embeddings usando backbones visuales potentes.
-- Usar test-time augmentation (TTA) fuerte en imagenes de producto (multi-crop/flip/color jitter) y promediar embeddings para crear un vector unico mas robusto por producto.
-- Guardar vectores y construir un indice ANN para busqueda rapida de vecinos mas cercanos.
-- Mantener el indice persistente para reutilizarlo en inferencia.
+### Opcion B: `src.new_infer` (v8)
 
 ```bash
-python preprocess_data.py --skip_download --out_dir data/preprocessed --val_ratio 0.1 --seed 42
+python -m src.new_infer \
+  infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
 ```
 
-### Aumento de Datos Offline (Guardado en Disco)
+Salida en `outputs/`:
 
-Usa `offline_augment.py` para generar vistas adicionales manteniendo los IDs (`bundle_asset_id` / `product_asset_id`):
+- `test_submission_v8.csv`
+- `val_metrics_v8.json` (si `infer.val_ratio > 0`)
+
+### Opcion C: `src.infer_phase1`
 
 ```bash
-python offline_augment.py \
-  --bundles_manifest data/manifests/train_manifest.jsonl \
-  --products_manifest data/product_dataset.csv \
-  --products_images_dir data/product_images \
-  --out_dir data/offline_aug \
-  --bundles_num_augs 4 \
-  --products_num_augs 2 \
-  --img_size 224 \
-  --seed 42 \
-  --workers 8
+python -m src.infer_phase1 \
+  infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
 ```
 
-Salidas:
-- `data/offline_aug/bundles_aug/*.jpg`
-- `data/offline_aug/products_aug/*.jpg`
-- `data/offline_aug/bundles_aug_manifest.jsonl`
-- `data/offline_aug/products_aug_manifest.jsonl`
+Salida en `outputs/`:
 
-### 3) Deteccion de Items en Bundle
-- Detectar regiones/recortes de items en cada imagen de bundle.
-- Mantener un recorte de imagen completa como respaldo cuando la deteccion falle en items pequenos.
+- `test_submission_phase1.csv`
+- `val_metrics_phase1.json` (si `infer.val_ratio > 0`)
 
-### 4) Recuperacion de Candidatos
-- Para cada recorte de bundle, recuperar los top-K productos candidatos desde el indice ANN.
-- Usar priors de categoria de `product_description` y `bundle_id_section` para reducir falsos positivos.
-- Aplicar augmentacion en tiempo de consulta sobre recortes de bundle y fusionar puntajes para compensar diferencias de punto de vista/fondo frente a imagenes de producto de vista unica.
+### Opcion D: `src.infer_top1`
 
-### 5) Reordenamiento
-- Reordenar candidatos recuperados con un scorer por pares usando:
-- Caracteristicas de similitud visual.
-- Confianza del detector.
-- Compatibilidad categoria/seccion.
-- Priorizar perdidas de metric learning con negativos dificiles para mejorar la discriminacion cuando solo existe una imagen de referencia por producto.
+```bash
+python -m src.infer_top1 \
+  infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
+```
 
-### 6) Prediccion Final y Entrega
-- Fusionar candidatos de todos los recortes de un bundle.
-- Eliminar duplicados de `product_asset_id`.
-- Ordenar por confianza y conservar hasta las primeras 15 predicciones por bundle.
-- Exportar un CSV de entrega con una fila por producto predicho.
+Salida en `outputs/`:
 
-### Restriccion de Producto con Imagen Unica (Importante)
-- Solo hay una imagen por ID de producto, por lo que no debes depender de aprendizaje multivista a nivel de producto.
-- Prioriza estrategias de robustez de embeddings: promediado con TTA, normalizacion fuerte de imagen y fusion de caracteristicas de dos encoders complementarios.
-- Usa recuperacion + reordenamiento en lugar de clasificacion directa sobre todos los productos, ya que el soporte por clase es extremadamente escaso.
+- `test_submission_top1.csv`
+- `val_metrics_top1.json` (si `infer.val_ratio > 0`)
 
-## Tecnologias Recomendadas
+Esta variante devuelve menos items por bundle (top-1 por crop, cap ~6), no fuerza 15 filas.
 
-### Framework Base
-- `Python 3.11+`
-- `PyTorch`
-- `torchvision`
-- `pandas`, `numpy`
+### Opcion E: `src.infer_openclip` (script argparse legacy)
 
-### Extraccion de Caracteristicas / Encoders
-- `transformers` + `timm`
-- `SigLIP` (embeddings alineados imagen-texto)
-- `DINOv2` (embeddings visuales robustos)
+```bash
+python -m src.infer_openclip \
+  --checkpoint outputs/retrieval_openclip/best.pt \
+  --submission-out outputs/retrieval_openclip/submission.csv
+```
 
-### Deteccion y Localizacion
-- `GroundingDINO` (deteccion de vocabulario abierto), o `OWL-ViT` como alternativa
-- Opcional: `segment-anything` para recortes mas ajustados si hace falta
+## Reportes Utiles
 
-### Recuperacion
-- `FAISS` para indice ANN y busqueda por similitud
-- Fusion TTA en tiempo de embedding y en tiempo de consulta para estabilizar el ranking de vecinos cercanos bajo condiciones de una sola imagen por producto
+### Alineacion temporal bundle-producto
 
-### Reordenamiento
-- `LightGBM` como ranker o un scorer MLP pequeno en `PyTorch`
+```bash
+python src/utils/check_link_timestamps.py \
+  --out-csv outputs/ts_date_alignment_report.csv \
+  --timezone UTC
+```
 
-### Entrenamiento / Experimentacion
-- `Hydra` para gestion de configuracion
-- `Weights & Biases` o `MLflow` para seguimiento de experimentos
+Resumen del reporte existente (`outputs/ts_date_alignment_report.csv`):
 
-### Inferencia y Salida
-- Inferencia en GPU por lotes para embeddings y deteccion
-- Postprocesado determinista para forzar la restriccion de top-15 por bundle en la salida
+- bundles analizados: 1,876
+- productos vinculados: 6,493
+- same date: 796 (12.26%)
+- same month: 3,543 (54.57%)
+- same quarter: 5,260 (81.01%)
+
+### Consistencia categoria-seccion
+
+`outputs/category_section_summary.json` existente indica:
+
+- 88 categorias totales
+- 38 categorias con >=30 muestras
+- pureza 0.95 usada en el analisis
+- 9 categorias "single-section" en el subset >=30
+- 10 categorias "almost single-section" en el subset >=30
+
+## Calidad y Limitaciones
+
+- No hay tests unitarios/integ activos en `tests/` (solo `__init__.py`).
+- `requirements.txt` no incluye dependencias opcionales clave (`open_clip_torch`, `ultralyticsplus`, `faiss-cpu`).
+- Algunos scripts asumen recursos externos (modelo YOLO y checkpoints OpenCLIP).
+- Si activas `infer.gender_filter=true` y no existe `product_dataset_with_gender.csv`, el filtro se desactiva de facto.
+
+## Documentacion Tecnica
+
+- Paper tecnico LaTeX: [documentacion/README.md](documentacion/README.md)

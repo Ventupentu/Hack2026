@@ -1,19 +1,27 @@
 # Documentacion LaTeX del Proyecto Hack2026
 
-Este directorio contiene un paper tecnico en LaTeX que documenta el proyecto completo (datos, metodologia, implementacion, entrenamiento, inferencia y reproducibilidad).
+Este directorio contiene el paper tecnico en LaTeX alineado con el estado actual del codigo del repositorio (entrenamiento OpenCLIP, variantes de inferencia y scripts de analisis).
 
 ## Estructura
 
-- `main.tex`: documento principal.
-- `sections/`: secciones modulares del paper.
-- `references.bib`: bibliografia.
-- `Makefile`: comandos de compilacion.
+- `main.tex`: documento principal
+- `sections/`: secciones modulares
+- `references.bib`: bibliografia
+- `Makefile`: comandos de compilacion
 
-## Compilacion Rapida
+## Compilacion
 
 ```bash
 cd documentacion
 make
 ```
 
-El PDF generado sera `main.pdf`.
+Salida esperada: `documentacion/main.pdf`.
+
+Para recompilar limpio:
+
+```bash
+cd documentacion
+make clean
+make
+```

@@ -1,5 +1,7 @@
 \section{Conclusiones}
 
-El repositorio de Hack2026 ya contiene un stack completo de retrieval: preparacion de datos, aumento determinista, retrieval baseline, entrenamiento OpenCLIP, codificacion opcional con sensibilidad a regiones y generacion de entregas. El diseno actual es practico y orientado a produccion, con configuracion explicita, checkpoints y registro de metricas.
+El repositorio Hack2026 dispone de un stack completo para retrieval bundle$\rightarrow$product: curacion de datos, aumento offline, entrenamiento OpenCLIP, multiples estrategias de inferencia y generacion de entregas en formato de competicion.
 
-Este paper funciona como especificacion tecnica del sistema implementado y puede usarse como base para trabajo futuro en precision de retrieval, optimizacion de latencia y reranking de candidatos a gran escala.
+La implementacion actual prioriza trazabilidad operativa (Hydra, checkpoints, metricas y reportes CSV/JSON) y permite iterar rapidamente sobre variantes de ranking y post-procesado sin rehacer el pipeline de base.
+
+Este documento queda como referencia tecnica del estado vigente del sistema y como base para trabajo futuro en validacion rigurosa, calibracion del ranking y optimizacion de latencia en produccion.

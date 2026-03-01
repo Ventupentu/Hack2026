@@ -1,10 +1,11 @@
 \section{Limitaciones y Riesgos}
 
 \begin{enumerate}
-  \item \textbf{Supervision de producto en vista unica:} cada ID de producto esta representado por imagenes muy limitadas, lo que puede reducir la robustez ante cambios de pose, oclusion e iluminacion.
-  \item \textbf{Manifiesto de validacion por defecto en el entrypoint de entrenamiento:} actualmente \texttt{src/train.py} apunta tanto train como val a \texttt{bundles\_product\_match\_train.csv}; para una seleccion estricta del modelo se deben pasar manifiestos de validacion separados.
-  \item \textbf{Dependencia de deteccion:} el modo guiado por deteccion depende de checkpoints externos de YOLO e introduce sobrecoste computacional adicional.
-  \item \textbf{Calibracion de la entrega:} la calidad del ranking importa mas que la exactitud top-1 simple porque la evaluacion conserva hasta las primeras 15 predicciones por bundle.
+  \item \textbf{Supervision visual limitada por producto:} muchos IDs tienen una sola vista, lo que dificulta robustez ante pose, oclusion e iluminacion.
+  \item \textbf{Val por defecto en train entrypoint:} \texttt{src/train.py} construye train/val desde el mismo CSV de relaciones; para seleccion estricta de modelo conviene separar manifiestos de validacion.
+  \item \textbf{Dependencia de modelos externos:} OpenCLIP y YOLO requieren pesos externos y pueden introducir variabilidad de entorno.
+  \item \textbf{Ausencia de suite de tests automatizados:} el repositorio no incluye tests unitarios/integracion activos para proteger regresiones.
+  \item \textbf{Calibracion de submission:} no todas las variantes fuerzan exactamente 15 filas por bundle, por lo que la eleccion del script afecta formato y cobertura de ranking.
 \end{enumerate}
 
-Las siguientes mejoras recomendadas son hard-negative mining, indexado ANN (por ejemplo, FAISS), estrategias de codificacion de texto mas ricas y capas de reranking mas potentes.
+Lineas de mejora recomendadas: mejor separacion train/val, suite de tests, reranking aprendido adicional y consolidacion de dependencias opcionales en instalacion reproducible.

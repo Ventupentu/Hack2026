@@ -1,18 +1,14 @@
 \section{Introduccion}
 
-La tarea Hack2026 es un problema de retrieval visual multietiqueta: dada una imagen de bundle (un look o conjunto de prendas), el sistema debe predecir la lista de identificadores de producto (\texttt{product\_asset\_id}) presentes en ese bundle. La salida final es un CSV con una fila por producto predicho, agrupado por \texttt{bundle\_asset\_id}, con un maximo de 15 predicciones por bundle.
+La tarea Hack2026 se formula como retrieval visual multietiqueta: dada una imagen de bundle, el sistema debe recuperar los \texttt{product\_asset\_id} correctos y ordenar hasta 15 candidatos por bundle para evaluacion.
 
-Este repositorio implementa dos enfoques complementarios:
+La base actual del repositorio es OpenCLIP (Marqo Fashion SigLIP) con varias rutas de inferencia especializadas. A nivel de ingenieria, el flujo de trabajo se divide en:
 \begin{enumerate}
-  \item Un baseline preentrenado ligero (\texttt{src/infer.py}) basado en retrieval por coseno sobre embeddings de imagen extraidos con backbones de torchvision.
-  \item Un modelo de retrieval multimodal entrenable (\texttt{src/models/retrieval\_openclip.py}) basado en Marqo Fashion SigLIP, con deteccion opcional de regiones en bundles y optimizacion contrastiva.
+  \item Preparacion de datos e imagenes (\texttt{download.sh}, \texttt{preprocess\_data.py}, \texttt{offline\_augment.py}).
+  \item Entrenamiento de retrieval multimodal (\texttt{python -m src.train}, backend \texttt{src/models/retrieval\_openclip.py}).
+  \item Inferencia y exportacion de submission (\texttt{src.infer}, \texttt{src.new\_infer}, \texttt{src.infer\_phase1}, \texttt{src.infer\_top1}, \texttt{src.infer\_openclip}).
 \end{enumerate}
 
-Desde una perspectiva de ingenieria, el codigo se organiza en tres etapas:
-\begin{enumerate}
-  \item Curacion de datos y preparacion de assets (\texttt{preprocess\_data.py}, \texttt{download.sh}, \texttt{offline\_augment.py}).
-  \item Entrenamiento y validacion local (\texttt{src/train.py} con configuracion Hydra).
-  \item Inferencia en test y exportacion de la entrega (\texttt{src/infer.py}, \texttt{src/infer\_openclip.py}).
-\end{enumerate}
+Adicionalmente, el proyecto incluye scripts de analisis para explotar senales de metadata temporal y estructura categoria-seccion (por ejemplo, \texttt{src/utils/check\_link\_timestamps.py}).
 
-Este paper documenta el pipeline de extremo a extremo y las decisiones practicas incorporadas en la implementacion actual.
+Este documento resume la implementacion vigente y los artefactos observables del workspace.
