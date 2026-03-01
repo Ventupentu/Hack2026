@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 \section{Metodologia}
 
 \subsection{Formulacion del Problema}
@@ -48,3 +49,49 @@ La validacion local usa \texttt{Hit@K} y \texttt{Recall@K} (\texttt{src/utils/me
 \begin{equation}
 \mathrm{Recall@K}(b)=\frac{|G_b \cap \hat{G}_b^K|}{|G_b|}
 \end{equation}
+=======
+\section{Methodology}
+
+\subsection{Problem Formulation}
+
+For each bundle query $b$, the objective is to rank product candidates $\{p_i\}_{i=1}^{N}$ and output up to 15 unique product IDs with highest relevance. Training uses known positive links from \texttt{bundles\_product\_match\_train.csv}.
+
+\subsection{Baseline Retrieval (\texttt{src/infer.py})}
+
+The baseline uses pretrained torchvision backbones (\texttt{resnet18}, \texttt{resnet50}, \texttt{efficientnet\_b0}) to encode bundle and product images. Embeddings are L2-normalized and cosine similarity is computed by dot product.
+
+For each query embedding $\mathbf{q}$ and product matrix $\mathbf{P}$:
+\begin{equation}
+\mathrm{sim}(\mathbf{q}, \mathbf{P}) = \mathbf{q}\mathbf{P}^{\top}
+\end{equation}
+Top-$K$ retrieval is implemented via partial sorting (\texttt{np.argpartition}) for speed.
+
+\subsection{OpenCLIP Multimodal Retrieval}
+
+The advanced backend uses Marqo Fashion SigLIP~\cite{zhai2023siglip,radford2021clip}. Product embeddings can fuse image and text representations (product description tokens), while bundle queries are image-based.
+
+Training uses symmetric bidirectional contrastive loss:
+\begin{equation}
+\mathcal{L} = \frac{1}{2}\Big[
+\mathrm{CE}\big((\mathbf{Q}\mathbf{P}^{\top})/\tau,\mathbf{y}\big) +
+\mathrm{CE}\big((\mathbf{P}\mathbf{Q}^{\top})/\tau,\mathbf{y}\big)
+\Big]
+\end{equation}
+where $\tau$ is temperature and $\mathbf{y}=[0,\ldots,B-1]$ are in-batch positive indices.
+
+\subsection{Detection-Guided Bundle Encoding}
+
+When enabled (\texttt{params.use\_bundle\_boxes=true}), bundle images are processed with YOLO clothing detection~\cite{jocher2023yolo}. Each detected region is encoded, and region embeddings are averaged per bundle:
+\begin{equation}
+\mathbf{e}_b = \mathrm{norm}\left(\frac{1}{M_b}\sum_{m=1}^{M_b}\mathbf{e}_{b,m}\right)
+\end{equation}
+If no boxes are detected, a full-image fallback is used. Detection results are cached in JSON for reuse across runs.
+
+\subsection{Validation Metrics}
+
+Validation follows multi-label retrieval with Hit@K and Recall@K (implemented in \texttt{src/utils/metrics.py}). Given ground-truth set $G_b$ and top-$K$ predictions $\hat{G}_b^K$:
+\begin{equation}
+\mathrm{Recall@K}(b)=\frac{|G_b \cap \hat{G}_b^K|}{|G_b|}
+\end{equation}
+The reported metric is the mean across evaluated bundles.
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4

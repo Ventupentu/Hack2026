@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 \section{Limitaciones y Riesgos}
 
 \begin{enumerate}
@@ -9,3 +10,15 @@
 \end{enumerate}
 
 Lineas de mejora recomendadas: mejor separacion train/val, suite de tests, reranking aprendido adicional y consolidacion de dependencias opcionales en instalacion reproducible.
+=======
+\section{Limitations and Risks}
+
+\begin{enumerate}
+  \item \textbf{Single-view product supervision:} each product ID is represented by very limited imagery, which can reduce robustness to pose, occlusion, and lighting changes.
+  \item \textbf{Validation manifest default in training entrypoint:} current \texttt{src/train.py} points both train and val manifests to \texttt{bundles\_product\_match\_train.csv}; separate validation manifests should be passed for strict model selection.
+  \item \textbf{Detection dependency:} detection-guided mode depends on external YOLO checkpoints and introduces additional compute overhead.
+  \item \textbf{Submission calibration:} ranking quality matters more than simple top-1 correctness because evaluation keeps up to the first 15 predictions per bundle.
+\end{enumerate}
+
+Recommended next improvements are hard-negative mining, ANN indexing (e.g., FAISS), richer text encoding strategies, and stronger reranking layers.
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
