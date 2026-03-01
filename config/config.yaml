@@ -54,3 +54,11 @@ infer:
   ts_bonus_same_month: 0.01
   ts_bonus_same_quarter: 0.005
   ts_penalty_diff_quarter: -0.005
+  # Post-processing Rerankers
+  rerank_hubness_enabled: true
+  rerank_hubness_max_ratio: 0.015
+  rerank_hubness_penalty: 0.1
+  rerank_heavy_enabled: false
+  rerank_heavy_model: "ViT-SO400M-14-SigLIP-384"
+  rerank_heavy_pretrained: "webli"
+  rerank_heavy_weight: 0.4
