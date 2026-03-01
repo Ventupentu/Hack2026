@@ -12,4 +12,5 @@ data/product_images/*
 __pycache__/
 /multirun
 /outputs
-
+*.pt
+*.tar.gz

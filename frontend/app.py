@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import tarfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -9,21 +10,37 @@ import open_clip
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from flask import Flask, abort, render_template, request, send_file
+from flask import Flask, abort, jsonify, render_template, request, send_file
 from PIL import Image, UnidentifiedImageError
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+THIS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = THIS_DIR if (THIS_DIR / "data").exists() else THIS_DIR.parent
+DATA_DIR = PROJECT_ROOT / "data"
 PRODUCT_IMAGES_DIR = DATA_DIR / "product_images"
 PRODUCTS_CSV = DATA_DIR / "product_dataset.csv"
-CHECKPOINT_PATH = ROOT / "outputs" / "best.pt"
+CHECKPOINT_CANDIDATES = (PROJECT_ROOT / "frontend" / "best.pt", PROJECT_ROOT / "outputs" / "best.pt")
+CHECKPOINT_PATH = next((path for path in CHECKPOINT_CANDIDATES if path.exists()), CHECKPOINT_CANDIDATES[0])
+EMBEDDINGS_PT_CANDIDATES = (
+    PROJECT_ROOT / "frontend" / "product_embeddings.pt",
+    PROJECT_ROOT / "frontend" / "56.18" / "product_embeddings.pt",
+)
+EMBEDDINGS_TAR_PATH = PROJECT_ROOT / "frontend" / "56.18.tar.gz"
 MODEL_NAME = "hf-hub:Marqo/marqo-fashionSigLIP"
 TOP_K = 8
 BATCH_SIZE = 64
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(PROJECT_ROOT / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 8 MB
+
+
+@app.after_request
+def add_cors_headers(response):
+    if request.path == "/predict-json" or request.path.startswith("/product-image/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 
 def strip_module_prefix(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -54,7 +71,7 @@ class BundleRetriever:
         payload = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=False)
         state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
         if not isinstance(state_dict, dict):
-            raise RuntimeError("Formato de checkpoint invalido en outputs/best.pt")
+            raise RuntimeError(f"Formato de checkpoint invalido en {CHECKPOINT_PATH}")
         state_dict = strip_module_prefix(state_dict)
         self.model.load_state_dict(state_dict, strict=False)
 
@@ -68,10 +85,62 @@ class BundleRetriever:
             for row in products_df.itertuples(index=False)
         }
 
-        product_ids = [pid for pid, path in self.product_image_map.items() if path.exists()]
-        self.product_ids, self.product_embeddings = self._encode_product_index(product_ids)
+        precomputed = self._load_precomputed_product_embeddings()
+        if precomputed is None:
+            product_ids = [pid for pid, path in self.product_image_map.items() if path.exists()]
+            self.product_ids, self.product_embeddings = self._encode_product_index(product_ids)
+            print("Embeddings: indexados en runtime")
+        else:
+            self.product_ids, self.product_embeddings = precomputed
+            print("Embeddings: cargados precomputados")
         self.sim_device = self.product_embeddings.device
         print(f"Retriever listo en {self.device} | index en {self.sim_device}")
+
+    def _load_precomputed_product_embeddings(self) -> Optional[tuple[List[str], torch.Tensor]]:
+        payload = None
+
+        for candidate in EMBEDDINGS_PT_CANDIDATES:
+            if candidate.exists():
+                payload = torch.load(candidate, map_location="cpu", weights_only=False)
+                break
+
+        if payload is None and EMBEDDINGS_TAR_PATH.exists():
+            with tarfile.open(EMBEDDINGS_TAR_PATH, "r:gz") as archive:
+                member = next(
+                    (item for item in archive.getmembers() if item.isfile() and item.name.endswith("product_embeddings.pt")),
+                    None,
+                )
+                if member is not None:
+                    extracted = archive.extractfile(member)
+                    if extracted is not None:
+                        payload = torch.load(io.BytesIO(extracted.read()), map_location="cpu", weights_only=False)
+
+        if payload is None or not isinstance(payload, dict):
+            return None
+
+        pids = payload.get("pids")
+        embeddings = payload.get("embeddings")
+        if not isinstance(pids, list) or not isinstance(embeddings, torch.Tensor):
+            return None
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(pids):
+            return None
+
+        filtered_ids: List[str] = []
+        filtered_indices: List[int] = []
+        for idx, raw_pid in enumerate(pids):
+            pid = str(raw_pid)
+            image_path = self.product_image_map.get(pid)
+            if image_path is not None and image_path.exists():
+                filtered_ids.append(pid)
+                filtered_indices.append(idx)
+
+        if not filtered_ids:
+            return None
+
+        filtered_embeddings = embeddings[filtered_indices].float().contiguous()
+        filtered_embeddings = F.normalize(filtered_embeddings, p=2, dim=1)
+        filtered_embeddings = filtered_embeddings.to(self.device, non_blocking=True)
+        return filtered_ids, filtered_embeddings
 
     @torch.inference_mode()
     def _encode_product_index(self, product_ids: List[str]) -> tuple[List[str], torch.Tensor]:
@@ -189,6 +258,31 @@ def predict():
     results = model.predict(image=image, top_k=TOP_K)
 
     return render_template("index.html", results=results, preview_image=preview_image, error=None)
+
+
+@app.post("/predict-json")
+def predict_json():
+    model = get_retriever()
+    if startup_error:
+        return jsonify({"error": startup_error}), 500
+    if model is None:
+        return jsonify({"error": "No se pudo cargar el modelo"}), 500
+
+    file = request.files.get("bundle_image")
+    if file is None or not file.filename:
+        return jsonify({"error": "Sube una imagen primero"}), 400
+
+    raw = file.read()
+    if not raw:
+        return jsonify({"error": "La imagen esta vacia"}), 400
+
+    try:
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+    except (OSError, UnidentifiedImageError):
+        return jsonify({"error": "Archivo de imagen invalido"}), 400
+
+    results = model.predict(image=image, top_k=TOP_K)
+    return jsonify({"results": results, "top_k": TOP_K, "checkpoint_path": str(CHECKPOINT_PATH)})
 
 
 @app.get("/product-image/<product_id>")

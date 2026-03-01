@@ -10,10 +10,13 @@ from pathlib import Path
 import pandas as pd
 
 
-PRODUCTS_CSV = Path("data/product_dataset.csv")
+THIS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = THIS_DIR if (THIS_DIR / "data").exists() else THIS_DIR.parent
+
+PRODUCTS_CSV = PROJECT_ROOT / "data" / "product_dataset.csv"
 PRODUCT_ID_COLUMN = "product_asset_id"
 PRODUCT_DESCRIPTION_COLUMN = "product_description"
-DEFAULT_OUTPUT = Path("outputs/bundle_csv_creator.html")
+DEFAULT_OUTPUT = PROJECT_ROOT / "outputs" / "bundle_csv_creator.html"
 
 # Hardcoded image paths relative to the generated HTML in outputs/
 BUNDLE_IMAGE_BASE = "../data/bundle_images/"
@@ -81,7 +84,8 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     }}
 
-    #csv-input {{
+    #csv-input,
+    #bundle-image-input {{
       position: absolute;
       width: 0;
       height: 0;
@@ -109,8 +113,16 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
     }}
 
+    .upload-actions {{
+      width: min(980px, 100%);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 16px;
+    }}
+
     .upload-main {{
-      min-width: min(620px, 92vw);
+      min-width: min(320px, 92vw);
       min-height: 94px;
       border: 1px solid #111111;
       background: #ffffff;
@@ -138,7 +150,7 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       top: 0;
       z-index: 30;
       display: grid;
-      grid-template-columns: minmax(120px, auto) 1fr minmax(190px, auto);
+      grid-template-columns: minmax(120px, auto) 1fr auto;
       align-items: center;
       gap: 14px;
       padding: 14px 0 20px;
@@ -166,7 +178,6 @@ def build_html(product_descriptions: dict[str, str]) -> str:
     }}
 
     .upload-secondary {{
-      justify-self: end;
       border: 1px solid #111111;
       background: #ffffff;
       color: #111111;
@@ -180,6 +191,14 @@ def build_html(product_descriptions: dict[str, str]) -> str:
     .upload-secondary:hover {{
       background: #111111;
       color: #ffffff;
+    }}
+
+    .top-actions {{
+      justify-self: end;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
     }}
 
     .gallery {{
@@ -206,6 +225,10 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       object-fit: cover;
       border: 1px solid #ececec;
       background: #f7f7f7;
+    }}
+
+    .bundle-image-hero {{
+      width: min(620px, 100%);
     }}
 
     .bundle-title {{
@@ -267,6 +290,14 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       text-transform: uppercase;
     }}
 
+    .product-score {{
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-align: center;
+      text-transform: uppercase;
+    }}
+
     .missing {{
       display: flex;
       align-items: center;
@@ -282,6 +313,11 @@ def build_html(product_descriptions: dict[str, str]) -> str:
     }}
 
     @media (max-width: 840px) {{
+      .upload-actions {{
+        flex-direction: column;
+        align-items: center;
+      }}
+
       .top-bar {{
         grid-template-columns: 1fr;
         justify-items: center;
@@ -293,6 +329,11 @@ def build_html(product_descriptions: dict[str, str]) -> str:
         justify-self: center;
       }}
 
+      .top-actions {{
+        justify-self: center;
+        justify-content: center;
+      }}
+
       .summary {{
         order: 3;
       }}
@@ -301,16 +342,23 @@ def build_html(product_descriptions: dict[str, str]) -> str:
 </head>
 <body>
   <input id="csv-input" type="file" accept=".csv,text/csv">
+  <input id="bundle-image-input" type="file" accept="image/*">
 
   <section id="upload-screen" class="upload-screen">
-    <label for="csv-input" class="upload-btn upload-main">Subir CSV de bundles</label>
+    <div class="upload-actions">
+      <label for="csv-input" class="upload-btn upload-main">Subir CSV de bundles</label>
+      <label for="bundle-image-input" class="upload-btn upload-main">Subir foto bundle</label>
+    </div>
   </section>
 
   <main id="gallery-root">
     <header class="top-bar">
-      <div class="brand">Bundle Edit</div>
+      <div class="brand">GoofyTex</div>
       <div id="summary" class="summary"></div>
-      <label for="csv-input" class="upload-btn upload-secondary">Cambiar CSV</label>
+      <div class="top-actions">
+        <label for="csv-input" class="upload-btn upload-secondary">Cambiar CSV</label>
+        <label for="bundle-image-input" class="upload-btn upload-secondary">Subir foto</label>
+      </div>
     </header>
     <div id="gallery" class="gallery"></div>
   </main>
@@ -319,12 +367,30 @@ def build_html(product_descriptions: dict[str, str]) -> str:
     const BUNDLE_IMAGE_BASE = {bundle_base};
     const PRODUCT_IMAGE_BASE = {product_base};
     const PRODUCT_DESCRIPTIONS = {descriptions_json};
+    const API_BASE = (() => {{
+      const url = new URL(window.location.href);
+      const queryApi = url.searchParams.get("api");
+      if (queryApi) {{
+        return queryApi.replace(/\\/$/, "");
+      }}
+      if (window.location.protocol === "file:") {{
+        return "http://127.0.0.1:8000";
+      }}
+      if (window.location.port === "8000") {{
+        return "";
+      }}
+      return "http://127.0.0.1:8000";
+    }})();
+    const PREDICT_ENDPOINT = API_BASE + "/predict-json";
+    const PRODUCT_API_IMAGE_BASE = API_BASE + "/product-image/";
 
     const csvInput = document.getElementById("csv-input");
+    const bundleImageInput = document.getElementById("bundle-image-input");
     const uploadScreen = document.getElementById("upload-screen");
     const galleryRoot = document.getElementById("gallery-root");
     const gallery = document.getElementById("gallery");
     const summary = document.getElementById("summary");
+    let activeBundlePreviewUrl = null;
 
     function parseCsvLine(line) {{
       const out = [];
@@ -398,6 +464,19 @@ def build_html(product_descriptions: dict[str, str]) -> str:
       return img;
     }}
 
+    function clearBundlePreviewUrl() {{
+      if (activeBundlePreviewUrl) {{
+        URL.revokeObjectURL(activeBundlePreviewUrl);
+        activeBundlePreviewUrl = null;
+      }}
+    }}
+
+    function showGallery() {{
+      uploadScreen.style.display = "none";
+      galleryRoot.style.display = "block";
+      window.scrollTo({{ top: 0, behavior: "smooth" }});
+    }}
+
     function productTypeLabel(productId) {{
       const typeText = PRODUCT_DESCRIPTIONS[productId];
       if (!typeText) {{
@@ -408,6 +487,7 @@ def build_html(product_descriptions: dict[str, str]) -> str:
 
     function renderGrouped(grouped) {{
       gallery.innerHTML = "";
+      clearBundlePreviewUrl();
       const bundles = [...grouped.entries()].sort((left, right) => left[0].localeCompare(right[0]));
 
       let totalProducts = 0;
@@ -475,9 +555,82 @@ def build_html(product_descriptions: dict[str, str]) -> str:
 
       summary.textContent = bundles.length + " bundles | " + totalProducts + " productos";
       gallery.appendChild(fragment);
-      uploadScreen.style.display = "none";
-      galleryRoot.style.display = "block";
-      window.scrollTo({{ top: 0, behavior: "smooth" }});
+      showGallery();
+    }}
+
+    function renderFromImage(file, results) {{
+      gallery.innerHTML = "";
+      clearBundlePreviewUrl();
+      activeBundlePreviewUrl = URL.createObjectURL(file);
+
+      const section = document.createElement("section");
+      section.className = "bundle";
+
+      const bundleHead = document.createElement("div");
+      bundleHead.className = "bundle-head";
+
+      const bundleImage = createImageOrMissing(
+        activeBundlePreviewUrl,
+        file.name || "bundle",
+        "bundle-image bundle-image-hero"
+      );
+      bundleHead.appendChild(bundleImage);
+
+      const title = document.createElement("h2");
+      title.className = "bundle-title";
+      title.textContent = "Bundle desde foto";
+      bundleHead.appendChild(title);
+
+      const meta = document.createElement("p");
+      meta.className = "bundle-meta";
+      meta.textContent = "Productos sugeridos: " + results.length;
+      bundleHead.appendChild(meta);
+      section.appendChild(bundleHead);
+
+      const productsGrid = document.createElement("div");
+      productsGrid.className = "products";
+
+      for (const item of results) {{
+        const productId = String(item.product_asset_id || "").trim();
+        if (!productId) {{
+          continue;
+        }}
+
+        const card = document.createElement("article");
+        card.className = "product-card";
+
+        const productImage = createImageOrMissing(
+          PRODUCT_API_IMAGE_BASE + encodeURIComponent(productId),
+          productId,
+          "product-image"
+        );
+        card.appendChild(productImage);
+
+        const type = document.createElement("div");
+        type.className = "product-type";
+        const resultType = String(item.description || "").trim();
+        type.textContent = "Tipo: " + (resultType || PRODUCT_DESCRIPTIONS[productId] || "no disponible");
+        card.appendChild(type);
+
+        const idEl = document.createElement("div");
+        idEl.className = "asset-id";
+        idEl.textContent = productId;
+        card.appendChild(idEl);
+
+        if (item.score) {{
+          const scoreEl = document.createElement("div");
+          scoreEl.className = "product-score";
+          scoreEl.textContent = "Score: " + item.score;
+          card.appendChild(scoreEl);
+        }}
+
+        productsGrid.appendChild(card);
+      }}
+
+      section.appendChild(productsGrid);
+      gallery.appendChild(section);
+      summary.textContent = "Modo foto bundle | " + results.length + " productos";
+      showGallery();
     }}
 
     csvInput.addEventListener("change", async (event) => {{
@@ -489,8 +642,52 @@ def build_html(product_descriptions: dict[str, str]) -> str:
         const text = await file.text();
         const grouped = parseCsvRows(text);
         renderGrouped(grouped);
+        summary.textContent = "Modo CSV | " + summary.textContent;
       }} catch (err) {{
         alert("Error leyendo CSV: " + (err && err.message ? err.message : String(err)));
+      }} finally {{
+        event.target.value = "";
+      }}
+    }});
+
+    bundleImageInput.addEventListener("change", async (event) => {{
+      const file = event.target.files && event.target.files[0];
+      if (!file) {{
+        return;
+      }}
+
+      summary.textContent = "Procesando foto bundle...";
+      try {{
+        const form = new FormData();
+        form.append("bundle_image", file);
+
+        const response = await fetch(PREDICT_ENDPOINT, {{
+          method: "POST",
+          body: form
+        }});
+
+        let payload = null;
+        try {{
+          payload = await response.json();
+        }} catch (_error) {{
+          payload = null;
+        }}
+
+        if (!response.ok) {{
+          const message = payload && payload.error ? payload.error : "No se pudo ejecutar la inferencia.";
+          throw new Error(message);
+        }}
+
+        const results = payload && Array.isArray(payload.results) ? payload.results : [];
+        renderFromImage(file, results);
+      }} catch (err) {{
+        alert(
+          "Error de inferencia: "
+          + (err && err.message ? err.message : String(err))
+          + "\\n\\nSi abriste el HTML en local, ejecuta el backend con: python3 frontend/app.py"
+        );
+      }} finally {{
+        event.target.value = "";
       }}
     }});
   </script>
@@ -502,12 +699,13 @@ def build_html(product_descriptions: dict[str, str]) -> str:
 def main() -> None:
     args = parse_args()
     product_descriptions = load_product_descriptions()
+    output_path = args.output if args.output.is_absolute() else PROJECT_ROOT / args.output
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     html_content = build_html(product_descriptions)
-    args.output.write_text(html_content, encoding="utf-8")
+    output_path.write_text(html_content, encoding="utf-8")
 
-    print(f"Creator HTML written to: {args.output}")
+    print(f"Creator HTML written to: {output_path}")
     print(f"Product descriptions loaded: {len(product_descriptions)}")
     print(f"Descriptions source: {PRODUCTS_CSV}")
 
