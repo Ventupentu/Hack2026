@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 \section{Introduccion}
 
 La tarea Hack2026 se formula como retrieval visual multietiqueta: dada una imagen de bundle, el sistema debe recuperar los \texttt{product\_asset\_id} correctos y ordenar hasta 15 candidatos por bundle para evaluacion.
@@ -12,3 +13,23 @@ La base actual del repositorio es OpenCLIP (Marqo Fashion SigLIP) con varias rut
 Adicionalmente, el proyecto incluye scripts de analisis para explotar senales de metadata temporal y estructura categoria-seccion (por ejemplo, \texttt{src/utils/check\_link\_timestamps.py}).
 
 Este documento resume la implementacion vigente y los artefactos observables del workspace.
+=======
+\section{Introduction}
+
+The Hack2026 task is a multi-label visual retrieval problem: given a bundle image (an outfit or set of garments), the system must predict the list of product identifiers (\texttt{product\_asset\_id}) present in that bundle. The final output is a CSV with one row per predicted product, grouped by \texttt{bundle\_asset\_id}, with a maximum of 15 predictions per bundle.
+
+This repository implements two complementary approaches:
+\begin{enumerate}
+  \item A lightweight pretrained baseline (\texttt{src/infer.py}) based on cosine retrieval over image embeddings from torchvision backbones.
+  \item A trainable multimodal retrieval model (\texttt{src/models/retrieval\_openclip.py}) based on Marqo Fashion SigLIP, with optional bundle-region detection and contrastive optimization.
+\end{enumerate}
+
+From an engineering perspective, the codebase is organized around three stages:
+\begin{enumerate}
+  \item Data curation and asset preparation (\texttt{preprocess\_data.py}, \texttt{download.sh}, \texttt{offline\_augment.py}).
+  \item Training and local validation (\texttt{src/train.py} with Hydra config).
+  \item Test-time inference and submission export (\texttt{src/infer.py}, \texttt{src/infer\_openclip.py}).
+\end{enumerate}
+
+This paper documents the end-to-end pipeline and the practical decisions embedded in the current implementation.
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4

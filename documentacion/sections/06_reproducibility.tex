@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 \section{Reproducibilidad}
 
 \subsection{Entorno}
@@ -32,9 +33,42 @@ El entrypoint \texttt{src.train.py} apunta por defecto a \texttt{data/product\_d
 \subsection{Contrato de Entrega}
 
 El CSV final usa columnas:
+=======
+\section{Reproducibility}
+
+\subsection{Environment}
+
+Base dependencies are listed in \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, and \texttt{torchvision}. Additional runtime packages required by advanced features are:
+\begin{itemize}
+  \item \texttt{open\_clip\_torch} for the OpenCLIP backend.
+  \item \texttt{ultralyticsplus} for bundle clothing detection.
+\end{itemize}
+
+\subsection{Determinism Controls}
+
+The code explicitly sets random seeds (\texttt{random}, \texttt{numpy}, \texttt{torch}). Offline augmentation uses stable hash-based seeds per asset and augmentation index. This enables repeatable preprocessing and consistent training behavior under fixed configuration.
+
+\subsection{Hydra Configuration}
+
+Configuration is split into:
+\begin{itemize}
+  \item \texttt{config/config.yaml}: training and inference parameters.
+  \item \texttt{config/files/file.yaml}: dataset/image/cache paths.
+\end{itemize}
+
+Hydra output directories store run-specific artifacts, making experiments traceable without manual path bookkeeping.
+
+\subsection{Submission Contract}
+
+The final CSV must contain:
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
 \begin{itemize}
   \item \texttt{bundle\_asset\_id}
   \item \texttt{product\_asset\_id}
 \end{itemize}
+<<<<<<< HEAD
 
 La evaluacion considera el orden de ranking y hasta 15 predicciones por bundle.
+=======
+with up to 15 rows per bundle, sorted by model confidence.
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
