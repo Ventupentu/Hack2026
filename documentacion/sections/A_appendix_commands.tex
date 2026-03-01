@@ -1,0 +1,110 @@
+<<<<<<< HEAD
+\section*{Apendice: Comandos Reproducibles}
+
+\subsection{Instalacion}
+\begin{verbatim}
+pip install -r requirements.txt
+pip install open_clip_torch ultralyticsplus
+# opcional: pip install faiss-cpu
+\end{verbatim}
+
+\subsection{Descarga de Imagenes}
+=======
+\section*{Appendix: Reproducible Commands}
+
+\subsection{Data Download}
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+\begin{verbatim}
+bash download.sh
+\end{verbatim}
+
+<<<<<<< HEAD
+\subsection{Preprocesamiento}
+\begin{verbatim}
+python preprocess_data.py \
+  --skip_download \
+  --out_dir data \
+=======
+\subsection{Preprocessing}
+\begin{verbatim}
+python preprocess_data.py \
+  --skip_download \
+  --out_dir data/preprocessed \
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+  --val_ratio 0.1 \
+  --seed 42
+\end{verbatim}
+
+<<<<<<< HEAD
+\subsection{Generacion de Metadata de Genero}
+\begin{verbatim}
+python src/utils/add_gender.py
+\end{verbatim}
+
+\subsection{Entrenamiento (Hydra)}
+=======
+\subsection{Offline Augmentation}
+\begin{verbatim}
+python offline_augment.py \
+  --bundles_manifest data/manifests/train_manifest.jsonl \
+  --products_manifest data/product_dataset.csv \
+  --products_images_dir data/product_images \
+  --out_dir data/offline_aug \
+  --bundles_num_augs 4 \
+  --products_num_augs 2 \
+  --img_size 224 \
+  --seed 42 \
+  --workers 8
+\end{verbatim}
+
+\subsection{Training (Hydra)}
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+\begin{verbatim}
+python -m src.train
+\end{verbatim}
+
+<<<<<<< HEAD
+\subsection{Inferencia Principal}
+\begin{verbatim}
+python -m src.infer infer.checkpoint_path=<ruta_a_best.pt>
+\end{verbatim}
+
+\subsection{Inferencia v8}
+\begin{verbatim}
+python -m src.new_infer infer.checkpoint_path=<ruta_a_best.pt>
+\end{verbatim}
+
+\subsection{Inferencia Phase 1}
+\begin{verbatim}
+python -m src.infer_phase1 infer.checkpoint_path=<ruta_a_best.pt>
+\end{verbatim}
+
+\subsection{Inferencia Top-1}
+\begin{verbatim}
+python -m src.infer_top1 infer.checkpoint_path=<ruta_a_best.pt>
+\end{verbatim}
+
+\subsection{Script Legacy OpenCLIP}
+=======
+\subsection{Baseline Inference}
+\begin{verbatim}
+python -m src.infer
+\end{verbatim}
+
+\subsection{OpenCLIP Inference}
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+\begin{verbatim}
+python -m src.infer_openclip \
+  --checkpoint outputs/retrieval_openclip/best.pt \
+  --submission-out outputs/retrieval_openclip/submission.csv
+\end{verbatim}
+<<<<<<< HEAD
+
+\subsection{Reporte de Timestamps}
+\begin{verbatim}
+python src/utils/check_link_timestamps.py \
+  --out-csv outputs/ts_date_alignment_report.csv \
+  --timezone UTC
+\end{verbatim}
+=======
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
