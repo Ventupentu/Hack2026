@@ -494,13 +494,31 @@ def main(cfg: InditexConfig) -> None:
     products_gender_csv = data_dir / "product_dataset_with_gender.csv"
     product_to_gender = load_product_genders(products_gender_csv)
 
-    # ---- Encode products ----
-    print("\n[1/5] Encoding products...")
-    encoded_pids, product_embeddings = encode_products(
-        product_ids, product_image_map, model, preprocess,
-        device, batch_size, num_workers, amp,
-    )
-    print(f"  Product embeddings: {product_embeddings.shape}")
+    # ---- Encode products (with cache) ----
+    # Cache key: checkpoint parent dir name so each model gets its own cache
+    ckpt_parent = Path(checkpoint_path).parent
+    embeddings_cache_path = ckpt_parent / "product_embeddings_grlite.pt"
+
+    if embeddings_cache_path.exists():
+        print(f"\n[1/5] Loading cached product embeddings from {embeddings_cache_path}...")
+        cache = torch.load(embeddings_cache_path, map_location="cpu", weights_only=False)
+        encoded_pids = cache["pids"]
+        product_embeddings = cache["embeddings"].numpy() if isinstance(cache["embeddings"], torch.Tensor) else cache["embeddings"]
+        print(f"  Loaded {len(encoded_pids)} product embeddings (shape={product_embeddings.shape})")
+    else:
+        print("\n[1/5] Encoding products (first run, will cache)...")
+        encoded_pids, product_embeddings = encode_products(
+            product_ids, product_image_map, model, preprocess,
+            device, batch_size, num_workers, amp,
+        )
+        print(f"  Product embeddings: {product_embeddings.shape}")
+        # Save cache
+        embeddings_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "pids": encoded_pids,
+            "embeddings": torch.from_numpy(product_embeddings),
+        }, embeddings_cache_path)
+        print(f"  Cached to {embeddings_cache_path}")
 
     # ---- Per-section indices ----
     print("\n[2/5] Building per-section product indices...")
