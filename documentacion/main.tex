@@ -1,0 +1,78 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{cite}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+<<<<<<< HEAD
+  pdftitle={Recuperacion de Bundle a Producto en Moda},
+  pdfauthor={Equipo Hack2026}
+}
+
+\title{Recuperacion de Bundle a Producto en Moda:\\Paper Tecnico y Documentacion del Sistema}
+\author{
+\IEEEauthorblockN{Equipo Hack2026}
+\IEEEauthorblockA{Informe Tecnico Interno}
+=======
+  pdftitle={Bundle-to-Product Retrieval in Fashion},
+  pdfauthor={Hack2026 Team}
+}
+
+\title{Bundle-to-Product Retrieval in Fashion:\\Technical Paper and System Documentation}
+\author{
+\IEEEauthorblockN{Hack2026 Team}
+\IEEEauthorblockA{Internal Technical Report}
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+<<<<<<< HEAD
+Este documento describe el sistema completo de retrieval de Hack2026 para descomposicion de bundles de moda, donde cada imagen de bundle debe asociarse con uno o mas identificadores de producto. La implementacion actual se apoya en OpenCLIP (Marqo Fashion SigLIP), con deteccion opcional de regiones de ropa y varias estrategias de inferencia (pipeline principal, per-crop v8, phase1 por seccion y top-1 por crop). Se detallan el preprocesamiento de datos, el aumento offline, el entrenamiento del modelo, la validacion local, la inferencia y la generacion de entregas. El paper se apoya en el codigo del repositorio, con enfasis en reproducibilidad y decisiones de ingenieria.
+\end{abstract}
+
+\begin{IEEEkeywords}
+recuperacion visual, aprendizaje multimodal, OpenCLIP, IA en moda, metric learning, matching a nivel de objeto
+=======
+This document describes the full Hack2026 retrieval system for fashion bundle decomposition, where each bundle image must be matched to one or more product identifiers. The implementation combines a baseline pretrained visual retrieval pipeline and an advanced OpenCLIP training pipeline with optional clothing-region detection. We detail data preprocessing, offline augmentation, model training, local validation, inference, and submission generation. The paper is grounded on the repository codebase, with an emphasis on reproducibility and engineering decisions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+visual retrieval, multimodal learning, OpenCLIP, fashion AI, metric learning, object-level matching
+>>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+\end{IEEEkeywords}
+
+\input{sections/01_introduction}
+\input{sections/02_data}
+\input{sections/03_method}
+\input{sections/04_implementation}
+\input{sections/05_experiments}
+\input{sections/06_reproducibility}
+\input{sections/07_limitations}
+\input{sections/08_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\appendix
+\input{sections/A_appendix_commands}
+
+\end{document}
