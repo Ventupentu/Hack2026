@@ -86,6 +86,18 @@ class Infer:
     rerank_heavy_model: str = "ViT-SO400M-14-SigLIP-384"
     rerank_heavy_pretrained: str = "webli"
     rerank_heavy_weight: float = 0.4
+    # Lightweight trained MLP reranker on top retrieved candidates
+    rerank_mlp_enabled: bool = False
+    rerank_mlp_checkpoint: str = ""
+    # < 0 => use blend_alpha saved in checkpoint
+    rerank_mlp_blend_alpha: float = -1.0
+    rerank_mlp_batch_size: int = 4096
+    # Candidate pool before final top-15 truncation
+    rerank_mlp_candidate_pool: int = 200
+    # Optional: export one train bundle embedding per bundle for MLP training.
+    # Aggregates multiple detected boxes with confidence-weighted mean.
+    export_train_bundle_embeddings: bool = False
+    train_bundle_embeddings_out: str = "outputs/train_bundle_embeddings.pt"
 
 
 @dataclass
