@@ -1,8 +1,8 @@
-# goofytex
+# Goofytex
 
 Repositorio para retrieval de productos de moda a partir de imagenes de bundles.
 
-Actualizado con inspeccion local del repo en fecha **2026-02-28**.
+Actualizado con inspeccion local del repo en fecha **01-03-2026**.
 
 ## Resumen
 
@@ -13,40 +13,66 @@ El stack actual esta centrado en **OpenCLIP (Marqo Fashion SigLIP)**, con varian
 - deteccion YOLO de prendas en bundles,
 - retrieval por similitud coseno,
 - filtros de post-procesado (gender, categoria, umbral de score),
-- reranking opcional con timestamps extraidos de URLs.
+- reranking opcional con timestamps y modelos ligeros/pesados.
 
-## Estado Actual del Workspace
+## Inventario de ideas implementadas en codigo
 
-Snapshot local detectado en este repo:
+### Entrenamiento y representacion
 
-- `data/bundles_dataset.csv`: 2,331 bundles
-- `data/product_dataset.csv`: 27,688 productos
-- `data/bundles_product_match_train.csv`: 6,493 relaciones train
-- `data/bundles_product_match_test.csv`: 455 bundles de test (sin IDs faltantes respecto al catalogo)
-- imagenes locales descargadas: 2,331 bundles y 27,688 productos
-- train (unicos): 1,876 bundles, 4,012 productos
-- promedio de productos por bundle en train: 3.461 (min=1, max=11)
+- **Entrenamiento contrastivo bundle-producto** con OpenCLIP multimodal (imagen + texto de producto), scheduler coseno con warmup, AMP y acumulacion de gradiente (`src/models/retrieval_openclip.py`).
+- **Hard negative mining configurable** (`mine_every`, `hard_neg_top_k`, `max_hard_negatives`) para reforzar discriminacion en candidatos dificiles (`config/config.yaml`, `src/models/retrieval_openclip.py`).
+- **Entrenamiento/inferencia guiados por cajas**: opcion de usar boxes YOLO en bundles, con cache persistente de detecciones (`src/models/retrieval_openclip.py`, `src/infer.py`).
+- **Compatibilidad multi-GPU (DataParallel)** y control de device/fallback CPU (`src/models/retrieval_openclip.py`, `src/train.py`).
 
-Artefactos de analisis presentes en `outputs/`:
+### Inferencia (familia de pipelines)
 
-- `ts_date_alignment_report.csv` (1,876 bundles analizados)
-- `category_section_consistency.csv`
-- `category_section_summary.json`
+- **Pipeline principal (`src.infer`)**: retrieval por boxes + fusion por score maximo, NMS de cajas, filtro de genero, deduplicacion por categoria, score threshold y fallback por productos populares cuando falta señal.
+- **Pipeline per-crop avanzado (`src.new_infer`)**: TTA para productos y crops, agregacion por suma entre crops, indexado FAISS opcional (fallback numpy), y rerank temporal por `ts` (misma fecha/mes/trimestre).
+- **Pipeline por fases (`src.infer_phase1`)**:
+- indices de producto por seccion (1/2/3) aprendidos desde train;
+- clasificacion zero-shot de categoria por crop via encoder de texto CLIP;
+- boost por coincidencia de categoria y boost fuerte por coincidencia de `article`;
+- export opcional de embeddings agregados de train para entrenar reranker MLP.
+- **Pipeline top-1 por crop (`src.infer_top1`)**: una prediccion por prenda detectada, evitando inflar artificialmente a top-15 cuando la escena tiene pocas prendas.
+- **Pipeline legacy (`src.infer_openclip`)**: ruta simple por argparse para checkpoints OpenCLIP.
 
-## Estructura Relevante
+### Reranking y fusion de modelos
+
+- **Hubness penalty**: penaliza productos que aparecen con demasiada frecuencia entre bundles (`src/reranker.py`).
+- **Heavy-model rerank (late interaction)**: re-score con un modelo visual mas pesado para refinar candidatos top (`src/reranker.py`).
+- **Reranker MLP listwise entrenado**:
+- objetivo listwise multi-positivo sobre top-k candidatos;
+- features configurables (`sim`, `|q-p|`, `q*p`, `sq_diff`, concatenaciones, features extra de query);
+- mezcla final `mlp_score + alpha * cosine_score`;
+- cache de candidatos top-k para acelerar entrenamiento (`src/rerank/train_mlp.py`).
+- **Ensemble de submissions por Reciprocal Rank Fusion (RRF)** para combinar multiples CSVs de prediccion (`src/ensemble_csv.py`).
+
+### Utilidades de datos y analitica
+
+- **Preprocesado robusto** con validacion de esquema, integridad referencial, limpieza de etiquetas y manifests train/val (`src/utils/preprocess_data.py`).
+- **Augmentacion offline determinista** con semillas estables por asset+indice (`src/utils/offline_augment.py`).
+- **Inferencia de genero de producto** por enlaces train + heuristicas de descripcion (`src/utils/add_gender.py`).
+- **Analisis temporal bundle-producto** a partir de timestamps en URLs (`src/utils/check_link_timestamps.py`).
+
+## Estructura Relevante (rutas actualizadas)
 
 - `src/train.py`: entrypoint Hydra para entrenamiento OpenCLIP.
 - `src/models/retrieval_openclip.py`: loop de train/val, checkpoints y `metrics.jsonl`.
 - `src/infer.py`: inferencia principal (OpenCLIP + YOLO + filtros).
-- `src/new_infer.py`: variante "v8" per-crop con TTA y FAISS opcional.
+- `src/new_infer.py`: variante per-crop con TTA y FAISS opcional.
 - `src/infer_phase1.py`: variante con filtrado por seccion + zero-shot por categoria.
-- `src/infer_top1.py`: variante top-1 por crop (salidas mas cortas por bundle).
+- `src/infer_top1.py`: variante top-1 por crop.
 - `src/infer_openclip.py`: inferencia simple por argparse desde checkpoint.
+- `src/rerank/train_mlp.py`: entrenamiento de reranker MLP listwise.
+- `src/reranker.py`: funciones de reranking de post-procesado.
+- `src/ensemble_csv.py`: ensemble de submissions por RRF.
 - `src/detection.py`: wrapper de YOLO clothing detection.
-- `src/utils/add_gender.py`: genera `product_dataset_with_gender.csv`.
+- `src/utils/add_gender.py`: genera `data/product_dataset_with_gender.csv`.
 - `src/utils/check_link_timestamps.py`: reporte de alineacion temporal bundle-producto.
-- `preprocess_data.py`: validacion/split/manifests/stats.
-- `offline_augment.py`: augmentacion offline para bundles/productos.
+- `src/utils/preprocess_data.py`: validacion/split/manifests/stats.
+- `src/utils/offline_augment.py`: augmentacion offline para bundles/productos.
+- `src/utils/download.sh`: descarga de imagenes de bundles/productos.
+- `src/notebooks/`: notebooks de exploracion.
 
 ## Instalacion
 
@@ -56,7 +82,7 @@ Dependencias base:
 pip install -r requirements.txt
 ```
 
-Dependencias usadas por los pipelines avanzados (no incluidas en `requirements.txt`):
+Dependencias usadas por pipelines avanzados (no incluidas en `requirements.txt`):
 
 ```bash
 pip install open_clip_torch ultralyticsplus
@@ -73,13 +99,13 @@ pip install faiss-cpu
 ### 1) Descargar imagenes
 
 ```bash
-bash download.sh
+bash src/utils/download.sh
 ```
 
 ### 2) Preprocesar y generar manifests/stats
 
 ```bash
-python preprocess_data.py \
+python src/utils/preprocess_data.py \
   --skip_download \
   --out_dir data \
   --val_ratio 0.1 \
@@ -94,7 +120,22 @@ Genera/actualiza, entre otros:
 - `data/label2idx.json`
 - `data/stats.json`
 
-### 3) Generar gender por producto (necesario para train por defecto)
+### 3) (Opcional) Augmentacion offline
+
+```bash
+python src/utils/offline_augment.py \
+  --bundles_manifest data/manifests/train_manifest.jsonl \
+  --products_manifest data/product_dataset.csv \
+  --products_images_dir data/product_images \
+  --out_dir data/offline_aug \
+  --bundles_num_augs 4 \
+  --products_num_augs 2 \
+  --img_size 224 \
+  --seed 42 \
+  --workers 8
+```
+
+### 4) Generar gender por producto (necesario para train por defecto)
 
 ```bash
 python src/utils/add_gender.py
@@ -102,9 +143,7 @@ python src/utils/add_gender.py
 
 Esto crea `data/product_dataset_with_gender.csv`.
 
-Importante: `src/train.py` usa ese archivo por defecto como `products_manifest`.
-
-### 4) Entrenar
+### 5) Entrenar
 
 ```bash
 python -m src.train
@@ -123,13 +162,10 @@ Salida de entrenamiento en carpeta Hydra:
 - `<hydra_run_dir>/retrieval_openclip/epoch_*.pt`
 - `<hydra_run_dir>/retrieval_openclip/metrics.jsonl`
 
-Nota tecnica: actualmente `src/train.py` apunta train y val al mismo CSV (`bundles_product_match_train.csv`).
-
 ## Inferencia
 
 ### Opcion A: `src.infer` (pipeline principal)
 
-## Quick start
 ```bash
 python -m src.infer \
   infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt \
@@ -141,17 +177,12 @@ Salida en carpeta Hydra de la corrida:
 - `test_submission.csv`
 - `val_metrics.json`
 
-### Opcion B: `src.new_infer` (v8)
+### Opcion B: `src.new_infer`
 
 ```bash
 python -m src.new_infer \
   infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
 ```
-
-Salida en `outputs/`:
-
-- `test_submission_v8.csv`
-- `val_metrics_v8.json` (si `infer.val_ratio > 0`)
 
 ### Opcion C: `src.infer_phase1`
 
@@ -160,11 +191,6 @@ python -m src.infer_phase1 \
   infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
 ```
 
-Salida en `outputs/`:
-
-- `test_submission_phase1.csv`
-- `val_metrics_phase1.json` (si `infer.val_ratio > 0`)
-
 ### Opcion D: `src.infer_top1`
 
 ```bash
@@ -172,19 +198,30 @@ python -m src.infer_top1 \
   infer.checkpoint_path=outputs/2026-02-28/11-49-02/retrieval_openclip/best.pt
 ```
 
-Salida en `outputs/`:
-
-- `test_submission_top1.csv`
-- `val_metrics_top1.json` (si `infer.val_ratio > 0`)
-
-Esta variante devuelve menos items por bundle (top-1 por crop, cap ~6), no fuerza 15 filas.
-
-### Opcion E: `src.infer_openclip` (script argparse legacy)
+### Opcion E: `src.infer_openclip` (legacy)
 
 ```bash
 python -m src.infer_openclip \
   --checkpoint outputs/retrieval_openclip/best.pt \
   --submission-out outputs/retrieval_openclip/submission.csv
+```
+
+## Reranking y Ensemble
+
+### Entrenar reranker MLP
+
+```bash
+python -m src.rerank.train_mlp \
+  --query-embeddings artifacts/embeddings/train_bundle_embeddings.pt \
+  --product-embeddings outputs/product_embeddings.pt \
+  --train-csv data/bundles_product_match_train.csv \
+  --output artifacts/rerank/mlp_reranker.pt
+```
+
+### Ensemble de CSVs (RRF)
+
+```bash
+python src/ensemble_csv.py outputs/sub1.csv outputs/sub2.csv -o outputs/ensemble_submission.csv
 ```
 
 ## Reportes Utiles
@@ -197,27 +234,9 @@ python src/utils/check_link_timestamps.py \
   --timezone UTC
 ```
 
-Resumen del reporte existente (`outputs/ts_date_alignment_report.csv`):
-
-- bundles analizados: 1,876
-- productos vinculados: 6,493
-- same date: 796 (12.26%)
-- same month: 3,543 (54.57%)
-- same quarter: 5,260 (81.01%)
-
-### Consistencia categoria-seccion
-
-`outputs/category_section_summary.json` existente indica:
-
-- 88 categorias totales
-- 38 categorias con >=30 muestras
-- pureza 0.95 usada en el analisis
-- 9 categorias "single-section" en el subset >=30
-- 10 categorias "almost single-section" en el subset >=30
-
 ## Calidad y Limitaciones
 
-- No hay tests unitarios/integ activos en `tests/` (solo `__init__.py`).
+- Los tests actuales en `tests/` son minimos (`tests/__init__.py` y `tests/test_submission.csv`).
 - `requirements.txt` no incluye dependencias opcionales clave (`open_clip_torch`, `ultralyticsplus`, `faiss-cpu`).
 - Algunos scripts asumen recursos externos (modelo YOLO y checkpoints OpenCLIP).
 - Si activas `infer.gender_filter=true` y no existe `product_dataset_with_gender.csv`, el filtro se desactiva de facto.

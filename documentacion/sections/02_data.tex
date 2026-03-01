@@ -2,8 +2,6 @@
 
 \subsection{Datasets de origen}
 
-Las fuentes de datos principales se resumen en la Tabla~\ref{tab:datasets}.
-
 \begin{table}[h]
   \centering
   \small
@@ -21,21 +19,20 @@ Las fuentes de datos principales se resumen en la Tabla~\ref{tab:datasets}.
   \label{tab:datasets}
 \end{table}
 
-\subsection{Pipeline de preprocesamiento}
+\subsection{Rutas de preprocesamiento actualizadas}
 
-\texttt{preprocess\_data.py} implementa validacion de esquema, chequeos de integridad referencial, split train/val por \texttt{bundle\_asset\_id}, descarga opcional de imagenes y generacion de manifiestos. Los artefactos principales son:
+El preprocesamiento y utilidades de datos se ejecutan desde \texttt{src/utils/}:
+\begin{itemize}
+  \item \texttt{src/utils/download.sh}
+  \item \texttt{src/utils/preprocess\_data.py}
+  \item \texttt{src/utils/offline\_augment.py}
+  \item \texttt{src/utils/add\_gender.py}
+\end{itemize}
+
+Artefactos principales generados:
 \begin{itemize}
   \item \texttt{data/manifests/train\_manifest.jsonl}
   \item \texttt{data/manifests/val\_manifest.jsonl}
-  \item \texttt{data/labels.json}, \texttt{data/label2idx.json}, \texttt{data/stats.json}
-\end{itemize}
-
-\subsection{Aumento offline}
-
-\texttt{offline\_augment.py} genera vistas sinteticas para bundles y productos con semillas deterministas por \texttt{asset\_id}+indice. El objetivo es ampliar variabilidad visual sin romper trazabilidad de datos.
-
-Artefactos tipicos del proceso:
-\begin{itemize}
-  \item \texttt{bundles\_aug/*.jpg}, \texttt{bundles\_aug\_manifest.jsonl}
-  \item \texttt{products\_aug/*.jpg}, \texttt{products\_aug\_manifest.jsonl}
+  \item \texttt{data/offline\_aug/}
+  \item \texttt{data/product\_dataset\_with\_gender.csv}
 \end{itemize}

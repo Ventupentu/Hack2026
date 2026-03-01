@@ -1,42 +1,23 @@
-\section{Plan Experimental (Sin Resultados)}
+\section{Plan Experimental}
 
-\subsection{Objetivo del plan}
+\subsection{Objetivo}
 
-Esta seccion define el protocolo de experimentacion para comparar variantes de pipeline sin reportar metricas finales. El foco es describir \textit{que} se prueba y \textit{como} se ejecuta cada prueba.
+Definir comparativas reproducibles entre variantes de embedding, deteccion, retrieval y reranking, sin reportar resultados numericos en este documento.
 
-\subsection{Matriz de experimentos propuesta}
-
-\begin{table}[h]
-  \centering
-  \small
-  \begin{tabular}{p{0.22\linewidth} p{0.35\linewidth} p{0.35\linewidth}}
-    \toprule
-    \textbf{Eje} & \textbf{Variantes} & \textbf{Scripts / Config} \\
-    \midrule
-    Embeddings & QRLite, OpenCLIP Marqo SigLIP, SigLIP, torchvision baselines & \texttt{train}, \texttt{infer}, \texttt{feature\_extractors} \\
-    Deteccion & Full-image only vs YOLO por crops, variando conf/IoU y max boxes & \texttt{detection.py}, parametros \texttt{bbox\_*} \\
-    Retrieval index & Dot-product directo vs FAISS (opcional) & \texttt{src.new\_infer.py} \\
-    Post-procesado & Gender filter, dedup por categoria, score threshold, TS rerank & \texttt{infer.*} en Hydra \\
-    Estrategia final & \texttt{infer}, \texttt{new\_infer}, \texttt{infer\_phase1}, \texttt{infer\_top1} & Entrypoints de inferencia \\
-    \bottomrule
-  \end{tabular}
-  \caption{Matriz de comparativas planificadas en el repositorio.}
-  \label{tab:exp-matrix}
-\end{table}
-
-\subsection{Protocolo operativo}
-
-\begin{enumerate}
-  \item Fijar semilla y configurar run con Hydra.
-  \item Codificar indice de productos para la variante seleccionada.
-  \item Ejecutar inferencia sobre split de validacion local controlado por \texttt{infer.val\_ratio}.
-  \item Exportar artefactos de run para trazabilidad y comparacion posterior.
-\end{enumerate}
-
-\subsection{Artefactos esperados por run}
+\subsection{Matriz de pruebas}
 
 \begin{itemize}
-  \item \texttt{metrics.jsonl}, \texttt{best.pt}, \texttt{epoch\_X.pt} en entrenamiento.
-  \item \texttt{test\_submission*.csv} y \texttt{val\_metrics*.json} en inferencia.
-  \item Caches de deteccion en JSON bajo \texttt{data/yolo\_detections} u otra ruta configurada.
+  \item Embeddings: OpenCLIP Marqo SigLIP, SigLIP y baselines torchvision.
+  \item Deteccion: full-image vs. crops YOLO.
+  \item Indexado: busqueda directa vs. FAISS opcional.
+  \item Post-procesado: filtros, TS rerank, MLP rerank.
+  \item Ensemble: RRF sobre multiples submissions.
+\end{itemize}
+
+\subsection{Artefactos por corrida}
+
+\begin{itemize}
+  \item \texttt{retrieval\_openclip/best.pt}, \texttt{epoch\_X.pt}, \texttt{metrics.jsonl}
+  \item \texttt{test\_submission*.csv}, \texttt{val\_metrics*.json}
+  \item caches de deteccion y metadatos en \texttt{data/} y \texttt{outputs/}
 \end{itemize}

@@ -1,9 +1,8 @@
 \section{Limitaciones y Riesgos}
 
 \begin{enumerate}
-  \item \textbf{Supervision visual limitada por producto:} muchos IDs tienen pocas vistas, lo que complica robustez ante cambios de pose y oclusion.
-  \item \textbf{Dependencia de modelos externos:} OpenCLIP y YOLO requieren pesos externos y versionado consistente de entorno.
-  \item \textbf{Coste computacional:} deteccion por crops y rerankings incrementan latencia frente a pipelines full-image.
-  \item \textbf{Dependencias opcionales no unificadas:} FAISS y Ultralytics se instalan aparte de \texttt{requirements.txt}.
-  \item \textbf{Cobertura de tests limitada:} no hay una suite extensa de tests automatizados para todas las variantes de inferencia.
+  \item Dependencia de pesos/modelos externos (OpenCLIP, YOLO).
+  \item Coste computacional adicional en variantes con deteccion + rerank.
+  \item Dependencias opcionales (FAISS/Ultralytics) fuera del set base de \texttt{requirements.txt}.
+  \item Cobertura de tests automatizados todavia limitada.
 \end{enumerate}

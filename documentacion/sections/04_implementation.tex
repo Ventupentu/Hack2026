@@ -2,67 +2,41 @@
 
 \subsection{Configuracion y entrypoints}
 
-El proyecto usa Hydra~\cite{yadan2019hydra} con dataclasses tipadas (\texttt{src/config.py}). Entrypoints operativos:
+El proyecto usa Hydra~\cite{yadan2019hydra} con dataclasses tipadas (\texttt{src/config.py}). Entrypoints principales:
 \begin{itemize}
-  \item \texttt{python -m src.train}: entrenamiento OpenCLIP.
-  \item \texttt{python -m src.infer}: inferencia principal con salida en directorio Hydra.
-  \item \texttt{python -m src.new\_infer}: inferencia per-crop con TTA y FAISS opcional.
-  \item \texttt{python -m src.infer\_phase1}: inferencia por seccion + zero-shot.
-  \item \texttt{python -m src.infer\_top1}: inferencia top-1 por crop.
-  \item \texttt{python -m src.infer\_openclip}: inferencia simple por CLI.
+  \item \texttt{python -m src.train}
+  \item \texttt{python -m src.infer}
+  \item \texttt{python -m src.new\_infer}
+  \item \texttt{python -m src.infer\_phase1}
+  \item \texttt{python -m src.infer\_top1}
+  \item \texttt{python -m src.infer\_openclip}
 \end{itemize}
 
-\subsection{Mapa de modulos}
+\subsection{Mapa de modulos (rutas vigentes)}
 
 \begin{table}[h]
   \centering
   \small
-  \begin{tabular}{p{0.37\linewidth} p{0.55\linewidth}}
+  \begin{tabular}{p{0.40\linewidth} p{0.52\linewidth}}
     \toprule
-    \textbf{Modulo} & \textbf{Responsabilidad} \\
+    \textbf{Modulo / Ruta} & \textbf{Responsabilidad} \\
     \midrule
-    \texttt{train.py} & Bootstrap Hydra y despacho de backend de entrenamiento. \\
-    \texttt{retrieval\_openclip.py} & Loop train/val, contrastive loss, mineria de negativos, checkpoints y metricas JSONL. \\
-    \texttt{infer.py} & Inferencia principal con deteccion opcional y post-procesado configurable. \\
-    \texttt{new\_infer.py} & Variante per-crop + TTA + indice FAISS opcional + TS rerank. \\
-    \texttt{infer\_phase1.py} & Variante por seccion y zero-shot de categoria por crop. \\
-    \texttt{infer\_top1.py} & Variante top-1 por crop para salidas compactas. \\
-    \texttt{infer\_openclip.py} & Script legacy de inferencia con argumentos CLI. \\
-    \texttt{detection.py} & Wrapper de YOLO clothing, NMS y cache de cajas. \\
-    \texttt{feature\_extractors.py} & Baselines de embeddings con torchvision (ResNet/EfficientNet). \\
-    \texttt{metrics.py} & Metricas Hit@K y Recall@K. \\
-    \texttt{add\_gender.py} & Enriquecimiento de genero para productos. \\
-    \texttt{check\_link\_timestamps.py} & Analisis de coherencia temporal bundle-producto. \\
+    \texttt{src/train.py} & Bootstrap Hydra y despacho de backend de entrenamiento. \\
+    \texttt{src/models/retrieval\_openclip.py} & Loop train/val, checkpoints y metricas JSONL. \\
+    \texttt{src/infer.py} & Inferencia principal OpenCLIP + YOLO + filtros. \\
+    \texttt{src/new\_infer.py} & Variante per-crop con TTA y FAISS opcional. \\
+    \texttt{src/infer\_phase1.py} & Variante por seccion + zero-shot por categoria. \\
+    \texttt{src/infer\_top1.py} & Variante top-1 por crop. \\
+    \texttt{src/infer\_openclip.py} & Script legacy de inferencia por argparse. \\
+    \texttt{src/rerank/train\_mlp.py} & Entrenamiento de reranker MLP listwise. \\
+    \texttt{src/reranker.py} & Rerankers de post-procesado (hubness/heavy model). \\
+    \texttt{src/ensemble\_csv.py} & Ensemble de submissions por RRF. \\
+    \texttt{src/utils/preprocess\_data.py} & Validacion de esquema, split y manifests. \\
+    \texttt{src/utils/offline\_augment.py} & Aumento offline determinista para imagenes. \\
+    \texttt{src/utils/download.sh} & Descarga de imagenes de bundles y productos. \\
+    \texttt{src/notebooks/} & Notebooks de EDA y baseline. \\
     \bottomrule
   \end{tabular}
-  \caption{Modulos principales y responsabilidades tecnicas.}
+  \caption{Rutas actualizadas tras la reorganizacion del repositorio.}
   \label{tab:code-map}
-\end{table}
-
-\subsection{Stack tecnologico observado en el repositorio}
-
-\begin{table}[h]
-  \centering
-  \small
-  \begin{tabular}{p{0.25\linewidth} p{0.28\linewidth} p{0.39\linewidth}}
-    \toprule
-    \textbf{Tecnologia} & \textbf{Tipo} & \textbf{Uso en el proyecto} \\
-    \midrule
-    Python & Lenguaje & Implementacion de pipelines de datos, entrenamiento e inferencia. \\
-    PyTorch & Deep learning & Entrenamiento/inferencia, autodiff, AMP y DataParallel. \\
-    Torchvision & Model zoo/preprocess & Baselines de embeddings (ResNet18/50, EfficientNet-B0). \\
-    OpenCLIP (\texttt{open\_clip\_torch}) & Multimodal encoder & Backend principal de embeddings y retrieval (Marqo Fashion SigLIP). \\
-    SigLIP & Familia de modelo & Base conceptual de los encoders contrastivos usados/probados. \\
-    Hydra (\texttt{hydra-core}) & Configuracion & Gestion de parametros, rutas y salidas reproducibles por run. \\
-    UltralyticsPlus (YOLO) & Deteccion de objetos & Deteccion de prendas y recorte por regiones de bundle. \\
-    FAISS (opcional) & ANN index & Aceleracion de busqueda de vecinos en \texttt{src.new\_infer.py}. \\
-    NumPy / Pandas & Data processing & Manipulacion tabular y operaciones vectoriales de retrieval. \\
-    Pillow & Vision I/O & Lectura y transformacion de imagenes. \\
-    tqdm & Observabilidad & Progreso de etapas largas (encoding, deteccion, retrieval). \\
-    requests & I/O red & Descarga y validacion de recursos en preprocesamiento. \\
-    LaTeX (IEEEtran) & Documentacion tecnica & Paper de metodologia, arquitectura y reproducibilidad. \\
-    \bottomrule
-  \end{tabular}
-  \caption{Tecnologias utilizadas y localizadas en el codigo/documentacion.}
-  \label{tab:tech-stack}
 \end{table}

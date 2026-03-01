@@ -4,33 +4,26 @@
 
 Dependencias base en \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, \texttt{torchvision}.
 
-Dependencias adicionales para pipelines avanzados:
+Dependencias adicionales:
 \begin{itemize}
-  \item \texttt{open\_clip\_torch} (backend OpenCLIP).
-  \item \texttt{ultralyticsplus} (deteccion YOLO clothing).
-  \item \texttt{faiss} (opcional en \texttt{src.new\_infer.py}).
+  \item \texttt{open\_clip\_torch}
+  \item \texttt{ultralyticsplus}
+  \item \texttt{faiss} (opcional)
 \end{itemize}
 
-\subsection{Determinismo}
+\subsection{Configuracion centralizada}
 
-El codigo fija semillas de \texttt{random}, \texttt{numpy} y \texttt{torch}. \texttt{offline\_augment.py} usa semillas estables por hash de \texttt{asset\_id}+indice para reproducir exactamente las mismas vistas sinteticas.
-
-\subsection{Configuracion Hydra}
-
-La configuracion esta centralizada en:
 \begin{itemize}
-  \item \texttt{config/config.yaml}: hiperparametros de train/infer.
-  \item \texttt{config/files/file.yaml}: rutas de datos, imagenes y caches.
+  \item \texttt{config/config.yaml}
+  \item \texttt{config/files/file.yaml}
 \end{itemize}
 
-Cada run genera un directorio de salida versionado por fecha/hora, lo que permite comparar variantes sin gestionar rutas manualmente.
+\subsection{Rutas de utilidades}
 
-\subsection{Contrato de entrega}
-
-El CSV de submission debe contener:
+Scripts auxiliares relevantes:
 \begin{itemize}
-  \item \texttt{bundle\_asset\_id}
-  \item \texttt{product\_asset\_id}
+  \item \texttt{src/utils/preprocess\_data.py}
+  \item \texttt{src/utils/offline\_augment.py}
+  \item \texttt{src/utils/add\_gender.py}
+  \item \texttt{src/utils/check\_link\_timestamps.py}
 \end{itemize}
-
-con un maximo de 15 filas por bundle y orden por confianza del modelo.

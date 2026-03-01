@@ -1,120 +1,42 @@
-\section{Metodologia (CRISP-DM)}
+\section{Metodologia}
 
-\subsection{Marco CRISP-DM aplicado}
+\subsection{Formulacion}
 
-La metodologia del proyecto sigue CRISP-DM y se adapta directamente a los scripts del repositorio (Tabla~\ref{tab:crisp-map}).
+Para cada bundle $b$, el sistema rankea candidatos de producto $\{p_i\}_{i=1}^{N}$ y devuelve hasta 15 IDs por bundle.
 
-\begin{table}[h]
-  \centering
-  \small
-  \begin{tabular}{p{0.27\linewidth} p{0.65\linewidth}}
-    \toprule
-    \textbf{Fase CRISP-DM} & \textbf{Aplicacion en goofytex} \\
-    \midrule
-    \textbf{Business Understanding} & Definicion del objetivo bundle$\rightarrow$product y del formato de entrega (maximo 15 predicciones por bundle). \\
-    \textbf{Data Understanding} & Inspeccion de CSVs, mapeo de imagenes y analisis de metadata (scripts en \texttt{preprocess\_data.py} y \texttt{src/utils}). \\
-    \textbf{Data Preparation} & Limpieza de etiquetas, manifests train/val, descarga/validacion de imagenes y augmentacion offline determinista. \\
-    \textbf{Modeling} & Entrenamiento retrieval multimodal con OpenCLIP, pruebas de familias de embedding alternativas y deteccion de regiones con YOLO. \\
-    \textbf{Evaluation} & Evaluacion local de ranking en validacion y chequeos funcionales del pipeline por script/variante. \\
-    \textbf{Deployment} & Generacion de \texttt{submission.csv}, configuracion con Hydra y ejecucion reproducible por CLI. \\
-    \bottomrule
-  \end{tabular}
-  \caption{Mapeo CRISP-DM a componentes reales del repositorio.}
-  \label{tab:crisp-map}
-\end{table}
+\subsection{Representacion y retrieval}
 
-\begin{figure}[h]
-  \centering
-  \small
-  \begin{tabular}{c}
-    \fbox{\parbox{0.92\linewidth}{\textbf{Business Understanding}\\Objetivo de retrieval, contrato de salida y restricciones de ranking}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{Data Understanding + Preparation}\\CSVs, imagenes, manifiestos, limpieza, augmentacion y features auxiliares}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{Modeling}\\Embeddings (QRLite/OpenCLIP/SigLIP), deteccion YOLO, retrieval y post-procesado}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{Evaluation + Deployment}\\Validacion local, export de submission y iteracion controlada por configuracion Hydra}}
-  \end{tabular}
-  \caption{Diagrama de alto nivel del flujo CRISP-DM en el proyecto.}
-  \label{fig:crisp-flow}
-\end{figure}
-
-\subsection{Modelos de embeddings probados}
-
-Durante la iteracion metodologica se trabajaron varias familias de embedding visual/multimodal. Entre ellas, la linea CLIP/SigLIP~\cite{radford2021clip,zhai2023siglip} estructura el backend principal de representacion. La Tabla~\ref{tab:embedding-families} resume su papel.
-
-\begin{table}[h]
-  \centering
-  \small
-  \begin{tabular}{p{0.30\linewidth} p{0.22\linewidth} p{0.40\linewidth}}
-    \toprule
-    \textbf{Familia de modelo} & \textbf{Estado} & \textbf{Uso en el flujo} \\
-    \midrule
-    \textbf{QRLite} & Probado & Alternativa ligera para prototipos de embeddings y comparacion de coste/inferencia. \\
-    \textbf{OpenCLIP Marqo Fashion SigLIP} & Principal & Backend actual de entrenamiento e inferencia multimodal (scripts \texttt{train}, \texttt{infer} y \texttt{new\_infer}). \\
-    \textbf{SigLIP} & Probado & Familia contrastiva adicional usada en pruebas de embeddings y zero-shot de categorias. \\
-    \textbf{Torchvision CNNs} (ResNet18/ResNet50/EfficientNet-B0) & Baseline & Encoders visuales preentrenados para baseline y comparativas de retrieval. \\
-    \bottomrule
-  \end{tabular}
-  \caption{Familias de embedding consideradas en la metodologia.}
-  \label{tab:embedding-families}
-\end{table}
-
-\subsection{Deteccion de prendas con YOLO}
-
-Para capturar objetos dentro del bundle se integra deteccion por regiones. El repositorio usa por defecto \texttt{kesimeg/yolov8n-clothing-detection} mediante \texttt{ultralyticsplus}, y la metodologia contempla pruebas con varias configuraciones/checkpoints YOLO~\cite{jocher2023yolo} para ajustar granularidad de crops.
-
-\begin{table}[h]
-  \centering
-  \small
-  \begin{tabular}{p{0.32\linewidth} p{0.24\linewidth} p{0.36\linewidth}}
-    \toprule
-    \textbf{Componente YOLO} & \textbf{Implementacion} & \textbf{Funcion en pipeline} \\
-    \midrule
-    YOLO clothing (familia YOLOv8) & \texttt{src/detection.py} & Deteccion de cajas por bundle y cache JSON reutilizable. \\
-    Variantes de umbral (conf/IoU) & Hydra config & Control de precision/cobertura de cajas antes del retrieval por crop. \\
-    Fallback imagen completa & \texttt{src.infer*} & Garantiza inferencia cuando no hay detecciones validas. \\
-    \bottomrule
-  \end{tabular}
-  \caption{Uso metodologico de YOLO en la fase de modelado/inferencia.}
-  \label{tab:yolo-components}
-\end{table}
-
-\subsection{Pipeline tecnico end-to-end}
-
-\begin{figure}[h]
-  \centering
-  \small
-  \begin{tabular}{c}
-    \fbox{\parbox{0.92\linewidth}{\textbf{1) Ingesta}\\CSVs + imagenes locales + metadata (seccion, genero, timestamps)}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{2) Embeddings}\\Encoder principal (OpenCLIP Marqo SigLIP) o variantes de embedding probadas}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{3) Deteccion y retrieval}\\YOLO por crop + similitud coseno + indice de productos (FAISS opcional)}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{4) Post-procesado}\\Filtro de genero, diversidad por categoria, score threshold, TS rerank}}\\[2pt]
-    $\downarrow$\\[2pt]
-    \fbox{\parbox{0.92\linewidth}{\textbf{5) Salida}\\\texttt{submission.csv} con ranking por bundle}}
-  \end{tabular}
-  \caption{Pipeline bundle$\rightarrow$product implementado en los scripts de inferencia.}
-  \label{fig:end2end-flow}
-\end{figure}
-
-\subsection{Recuperacion y scoring}
-
-La similitud principal se calcula por coseno sobre embeddings normalizados:
+El backend principal usa OpenCLIP Marqo Fashion SigLIP~\cite{radford2021clip,zhai2023siglip}. La similitud se calcula por coseno sobre embeddings normalizados:
 \begin{equation}
 \mathrm{sim}(\mathbf{q}, \mathbf{P}) = \mathbf{q}\mathbf{P}^{\top}
 \end{equation}
 
-En entrenamiento (\texttt{src/models/retrieval\_openclip.py}) se usa perdida contrastiva bidireccional bundle$\leftrightarrow$product, con scheduler coseno, warmup, AMP opcional y mineria de negativos duros configurable.
+\subsection{Deteccion por regiones}
 
-\subsection{Variantes de inferencia implementadas}
+Cuando se habilita deteccion, se usan cajas de ropa con YOLO~\cite{jocher2023yolo}, con cache reutilizable en JSON. Si no hay detecciones validas, se usa fallback a imagen completa.
 
+\subsection{Reranking}
+
+El pipeline incluye capas opcionales de post-procesado:
 \begin{itemize}
-  \item \texttt{src.infer}: pipeline principal (OpenCLIP + YOLO + filtros).
-  \item \texttt{src.new\_infer}: retrieval per-crop con TTA y FAISS opcional.
-  \item \texttt{src.infer\_phase1}: filtrado por seccion + zero-shot por categoria.
-  \item \texttt{src.infer\_top1}: estrategia compacta top-1 por crop.
-  \item \texttt{src.infer\_openclip}: script legacy por argparse.
+  \item filtros de genero/categoria/score;
+  \item ajuste por timestamp;
+  \item reranker MLP entrenado en \texttt{src/rerank/train\_mlp.py};
+  \item fusion de submissions por RRF en \texttt{src/ensemble\_csv.py}.
+\end{itemize}
+
+\subsection{Inventario de ideas implementadas}
+
+El codigo actual incluye las siguientes ideas tecnicas, ya implementadas en scripts:
+\begin{itemize}
+  \item entrenamiento contrastivo OpenCLIP bundle$\\leftrightarrow$product con soporte AMP, acumulacion de gradiente y mineria de negativos duros (\texttt{src/models/retrieval\_openclip.py});
+  \item retrieval guiado por deteccion YOLO con cache de cajas y fallback a imagen completa (\texttt{src/infer.py}, \texttt{src/new\_infer.py});
+  \item pipeline per-crop con TTA, agregacion multi-crop y indexado FAISS opcional (\texttt{src/new\_infer.py});
+  \item filtrado por seccion + clasificacion zero-shot de categoria por crop + boost semantico (\texttt{src/infer\_phase1.py});
+  \item estrategia top-1 por crop para predicciones compactas (\texttt{src/infer\_top1.py});
+  \item rerank temporal por proximidad de timestamps extraidos de URL (\texttt{src/new\_infer.py}, \texttt{src/infer\_phase1.py});
+  \item reranker MLP listwise con features de pares embedding y mezcla con score base (\texttt{src/rerank/train\_mlp.py}, \texttt{src/infer\_phase1.py});
+  \item penalizacion de hubness y rerank con modelo pesado de vision (late interaction) (\texttt{src/reranker.py});
+  \item ensemble final de predicciones por Reciprocal Rank Fusion (\texttt{src/ensemble\_csv.py});
+  \item utilidades de datos reproducibles: preprocesado robusto, augmentacion offline determinista, inferencia de genero y analitica temporal (\texttt{src/utils/}).
 \end{itemize}

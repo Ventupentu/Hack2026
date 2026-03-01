@@ -1,12 +1,12 @@
 \section{Introduccion}
 
-En goofytex, la tarea se formula como retrieval visual multietiqueta: dada una imagen de bundle, el sistema debe recuperar y ordenar los \texttt{product\_asset\_id} mas probables, con un maximo de 15 predicciones por bundle.
+La tarea en goofytex es retrieval visual multietiqueta: dada una imagen de bundle, el sistema debe recuperar los \texttt{product\_asset\_id} correctos y ordenarlos por relevancia.
 
-El repositorio implementa un stack modular orientado a experimentacion rapida y despliegue reproducible:
+Tras la reorganizacion del repositorio, el flujo operativo se distribuye en tres bloques:
 \begin{enumerate}
-  \item Preparacion de datos e imagenes (\texttt{download.sh}, \texttt{preprocess\_data.py}, \texttt{offline\_augment.py}).
-  \item Entrenamiento de retrieval multimodal (\texttt{python -m src.train}, backend \texttt{src/models/retrieval\_openclip.py}).
-  \item Inferencia y exportacion de submission (\texttt{src.infer}, \texttt{src.new\_infer}, \texttt{src.infer\_phase1}, \texttt{src.infer\_top1}, \texttt{src.infer\_openclip}).
+  \item Preparacion de datos e imagenes en \texttt{src/utils/} (\texttt{download.sh}, \texttt{preprocess\_data.py}, \texttt{offline\_augment.py}).
+  \item Entrenamiento y modelado en \texttt{src/} (\texttt{train.py}, \texttt{models/retrieval\_openclip.py}).
+  \item Inferencia, reranking y export de submission en \texttt{src/} (\texttt{infer*.py}, \texttt{rerank/train\_mlp.py}, \texttt{ensemble\_csv.py}).
 \end{enumerate}
 
-La documentacion adopta CRISP-DM como marco de trabajo para organizar decisiones tecnicas, trazabilidad y fases de iteracion. El objetivo de este paper es consolidar la metodologia y las tecnologias usadas en el codigo, sin incluir resultados de rendimiento.
+Este documento actualiza rutas y componentes para que la documentacion coincida con el estado real del workspace.

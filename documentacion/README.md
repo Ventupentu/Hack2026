@@ -1,6 +1,6 @@
-# Documentacion LaTeX del Proyecto goofytex
+# Documentacion LaTeX de goofytex
 
-Este directorio contiene el paper tecnico en LaTeX alineado con el estado actual del codigo del repositorio (entrenamiento OpenCLIP, variantes de inferencia y scripts de analisis).
+Este directorio contiene el paper tecnico en LaTeX alineado con la estructura actual del repositorio.
 
 ## Estructura
 

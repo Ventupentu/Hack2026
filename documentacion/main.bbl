@@ -7,7 +7,8 @@
 \providecommand{\BIBentrySTDinterwordspacing}{\spaceskip=0pt\relax}
 \providecommand{\BIBentryALTinterwordstretchfactor}{4}
 \providecommand{\BIBentryALTinterwordspacing}{\spaceskip=\fontdimen2\font plus
-\BIBentryALTinterwordstretchfactor\fontdimen3\font minus \fontdimen4\font\relax}
+\BIBentryALTinterwordstretchfactor\fontdimen3\font minus
+  \fontdimen4\font\relax}
 \providecommand{\BIBforeignlanguage}[2]{{%
 \expandafter\ifx\csname l@#1\endcsname\relax
 \typeout{** WARNING: IEEEtran.bst: No hyphenation pattern has been}%
@@ -21,15 +22,20 @@
 \BIBdecl
 
 \bibitem{radford2021clip}
-A.~Radford, J.~W. Kim, C.~Hallacy \emph{et~al.}, ``Learning transferable visual models from natural language supervision,'' in \emph{Proceedings of the International Conference on Machine Learning}, 2021.
+A.~Radford, J.~W. Kim, C.~Hallacy \emph{et~al.}, ``Learning transferable visual
+  models from natural language supervision,'' in \emph{Proceedings of the
+  International Conference on Machine Learning}, 2021.
 
 \bibitem{zhai2023siglip}
-X.~Zhai, B.~Mustafa, A.~Kolesnikov, and L.~Beyer, ``Sigmoid loss for language image pre-training,'' \emph{arXiv preprint arXiv:2303.15343}, 2023.
+X.~Zhai, B.~Mustafa, A.~Kolesnikov, and L.~Beyer, ``Sigmoid loss for language
+  image pre-training,'' \emph{arXiv preprint arXiv:2303.15343}, 2023.
 
 \bibitem{jocher2023yolo}
-G.~Jocher, A.~Chaurasia, and J.~Qiu, ``Ultralytics yolov8,'' GitHub repository, 2023.
+G.~Jocher, A.~Chaurasia, and J.~Qiu, ``Ultralytics yolov8,'' GitHub repository,
+  2023.
 
 \bibitem{yadan2019hydra}
-O.~Yadan, ``Hydra: A framework for elegantly configuring complex applications,'' GitHub repository, 2019.
+O.~Yadan, ``Hydra: A framework for elegantly configuring complex
+  applications,'' GitHub repository, 2019.
 
 \end{thebibliography}

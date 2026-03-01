@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2025.12.12)  1 MAR 2026 04:08
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2025.12.12)  1 MAR 2026 08:36
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -632,172 +632,159 @@ File: umsb.fd 2013/01/14 v3.01 AMS symbols B
 (/usr/share/texlive/texmf-dist/tex/latex/microtype/mt-msb.cfg
 File: mt-msb.cfg 2005/06/01 v1.0 microtype config. file: AMS symbols (b) (RS)
 )
-(./sections/01_introduction.tex
-Package microtype Info: Character `029' is missing
-(microtype)             in font `T1/lmr/m/sc/10'.
-(microtype)             Ignoring protrusion settings for this character.
 LaTeX Font Info:    Trying to load font information for T1+lmtt on input line 3
-.
- (/usr/share/texmf/tex/latex/lm/t1lmtt.fd
+7.
+
+(/usr/share/texmf/tex/latex/lm/t1lmtt.fd
 File: t1lmtt.fd 2015/05/01 v1.6.1 Font defs for Latin Modern
 )
+LaTeX Font Info:    Font shape `T1/lmtt/bx/n' in size <9> not available
+(Font)              Font shape `T1/lmtt/b/n' tried instead on input line 37.
 Package microtype Info: Loading generic protrusion settings for font family
 (microtype)             `lmtt' (encoding: T1).
 (microtype)             For optimal results, create family-specific settings.
 (microtype)             See the microtype manual for details.
+ (./sections/01_introduction.tex
+Package microtype Info: Character `029' is missing
+(microtype)             in font `T1/lmr/m/sc/10'.
+(microtype)             Ignoring protrusion settings for this character.
 
-Underfull \hbox (badness 10000) in paragraph at lines 8--9
-[]\T1/lmr/m/n/10 (+20) Entrenamiento de re-trieval mul-ti-
+Underfull \hbox (badness 10000) in paragraph at lines 7--8
+[]\T1/lmr/m/n/10 (+20) Preparacion de datos e im-a-genes en
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 8--9
-\T1/lmr/m/n/10 (+20) modal (\T1/lmtt/m/n/10 python -m src.train\T1/lmr/m/n/10 (
-+20) , back-end
+Underfull \hbox (badness 5189) in paragraph at lines 9--10
+[]\T1/lmr/m/n/10 (+20) Inferencia, rerank-ing y ex-port de sub-mis-sion
  []
 
 
 Underfull \hbox (badness 10000) in paragraph at lines 9--10
-[]\T1/lmr/m/n/10 (+20) Inferencia y ex-porta-cion de sub-mis-sion
- []
-
-
-Underfull \hbox (badness 4531) in paragraph at lines 9--10
-\T1/lmr/m/n/10 (+20) (\T1/lmtt/m/n/10 src.infer\T1/lmr/m/n/10 (+20) , \T1/lmtt/
-m/n/10 src.new_infer\T1/lmr/m/n/10 (+20) , \T1/lmtt/m/n/10 src.infer_phase1\T1/
-lmr/m/n/10 (+20) ,
+\T1/lmr/m/n/10 (+20) en \T1/lmtt/m/n/10 src/ \T1/lmr/m/n/10 (+20) (\T1/lmtt/m/n
+/10 infer*.py\T1/lmr/m/n/10 (+20) , \T1/lmtt/m/n/10 rerank/train_mlp.py\T1/lmr/
+m/n/10 (+20) ,
  []
 
 ) (./sections/02_data.tex
-Overfull \hbox (55.75456pt too wide) in paragraph at lines 16--16
-[]|\T1/lmtt/m/n/9 bundles_product_match_train.csv| 
+Overfull \hbox (22.67963pt too wide) in paragraph at lines 12--12
+[]|\T1/lmtt/m/n/9 data/bundles_dataset.csv| 
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 16--17
+Overfull \hbox (22.67963pt too wide) in paragraph at lines 13--13
+[]|\T1/lmtt/m/n/9 data/product_dataset.csv| 
+ []
+
+
+Overfull \hbox (79.37952pt too wide) in paragraph at lines 14--14
+[]|\T1/lmtt/m/n/9 data/bundles_product_match_train.csv| 
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 14--15
 []|\T1/lmr/m/n/9 (+20) Enlaces su-per-visa-dos bundle-
  []
 
 
-Overfull \hbox (51.02957pt too wide) in paragraph at lines 17--17
-[]|\T1/lmtt/m/n/9 bundles_product_match_test.csv| 
+Overfull \hbox (74.65453pt too wide) in paragraph at lines 15--15
+[]|\T1/lmtt/m/n/9 data/bundles_product_match_test.csv| 
  []
 
 
-Underfull \hbox (badness 3439) in paragraph at lines 17--18
+Underfull \hbox (badness 3439) in paragraph at lines 15--16
 []|\T1/lmr/m/n/9 (+20) Plantilla de test para pre-de-cir
  []
 
 
-Overfull \hbox (3.83954pt too wide) in paragraph at lines 10--20
+Overfull \hbox (3.83954pt too wide) in paragraph at lines 8--18
  [][] 
  []
 
 Package microtype Info: Character `029' is missing
 (microtype)             in font `T1/lmr/m/sc/8'.
 (microtype)             Ignoring protrusion settings for this character.
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
 LaTeX Font Info:    External font `lmex10' loaded for size
-(Font)              <10> on input line 28.
+(Font)              <10> on input line 26.
 LaTeX Font Info:    External font `lmex10' loaded for size
-(Font)              <7> on input line 28.
-
-Underfull \hbox (badness 2134) in paragraph at lines 26--28
-[]\T1/lmtt/m/n/10 preprocess_data.py \T1/lmr/m/n/10 (+20) im-ple-menta val-i-da
--cion de es-
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 30--31
-[]\T1/lmtt/m/n/10 data/labels.json\T1/lmr/m/n/10 (+20) , \T1/lmtt/m/n/10 data/l
-abel2idx.json\T1/lmr/m/n/10 (+20) ,
- []
-
-
-Underfull \hbox (badness 2772) in paragraph at lines 35--36
-[]\T1/lmtt/m/n/10 offline_augment.py \T1/lmr/m/n/10 (+20) gen-era vis-tas sin-t
-et-i-cas para
- []
-
-
-Underfull \hbox (badness 1688) in paragraph at lines 35--36
-\T1/lmr/m/n/10 (+20) bun-dles y pro-duc-tos con semil-las de-ter-min-istas por
- []
-
-
-Overfull \hbox (9.36876pt too wide) in paragraph at lines 40--41
-[]\T1/lmtt/m/n/10 products_aug/*.jpg\T1/lmr/m/n/10 (-20) , \T1/lmtt/m/n/10 prod
-ucts_aug_manifest.jsonl 
- []
-
+(Font)              <7> on input line 26.
 ) (./sections/03_method.tex
-Underfull \hbox (badness 10000) in paragraph at lines 12--12
-[]|\T1/lmr/bx/n/9 (+20) Fase CRISP-
+Underfull \hbox (badness 10000) in paragraph at lines 24--25
+[]\T1/lmr/m/n/10 (+20) reranker MLP en-tre-nado en
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 14--14
-[]|\T1/lmr/bx/n/9 (+20) Business Un-
+Underfull \hbox (badness 10000) in paragraph at lines 25--26
+[]\T1/lmr/m/n/10 (+20) fusion de sub-mis-sions por RRF en
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 15--15
-[]|\T1/lmr/bx/n/9 (+20) Data Un-der-
+Underfull \hbox (badness 10000) in paragraph at lines 35--36
+[]\T1/lmr/m/n/10 (+20) filtrado por sec-cion + clasi-fi-ca-cion zero-shot
  []
 
 
-Underfull \hbox (badness 1783) in paragraph at lines 15--16
-[]|\T1/lmr/m/n/9 (+20) Inspeccion de CSVs, mapeo de im-a-
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 16--17
-[]|\T1/lmr/m/n/9 (+20) Limpieza de eti-que-tas, man-i-fests
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 16--17
-\T1/lmr/m/n/9 (+20) train/val, descarga/validacion de
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 16--17
-\T1/lmr/m/n/9 (+20) im-a-genes y aug-menta-cion of-fline
- []
-
-
-Overfull \hbox (3.83954pt too wide) in paragraph at lines 10--22
- [][] 
- []
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 34--34
-\T1/lmr/m/n/9 (+20) Embeddings (QR-Lite/OpenCLIP/SigLIP), de-tec-cion
+Underfull \hbox (badness 10000) in paragraph at lines 35--36
+\T1/lmr/m/n/10 (+20) de cat-e-go-ria por crop + boost se-man-tico
  []
 
 [1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}{/usr/share/texmf/fonts/en
 c/dvips/lm/lm-ec.enc}
 
 
-{/usr/share/texmf/fonts/enc/dvips/lm/lm-mathsy.enc}]
-Underfull \hbox (badness 1655) in paragraph at lines 53--54
-[]|\T1/lmr/m/n/9 (+20) Alternativa lig-era para
+{/usr/share/texmf/fonts/enc/dvips/lm/lm-mathsy.enc}{/usr/share/texmf/fonts/enc/
+dvips/lm/lm-mathit.enc}{/usr/share/texmf/fonts/enc/dvips/lm/lm-rm.enc}]
+Underfull \hbox (badness 1603) in paragraph at lines 37--38
+[]\T1/lmr/m/n/10 (+20) rerank tem-po-ral por prox-im-i-dad de times-tamps
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 53--54
-\T1/lmr/m/n/9 (+20) y com-para-cion de
+Underfull \hbox (badness 10000) in paragraph at lines 37--38
+\T1/lmr/m/n/10 (+20) ex-trai-dos de URL (\T1/lmtt/m/n/10 src/new_infer.py\T1/lm
+r/m/n/10 (+20) ,
+ []
+
+) (./sections/04_implementation.tex
+Overfull \hbox (50.40125pt too wide) in paragraph at lines 25--25
+[]|\T1/lmtt/m/n/9 src/models/retrieval_openclip.py| 
  []
 
 
-Underfull \hbox (badness 10000) in paragraph at lines 54--54
-[]|\T1/lmr/bx/n/9 (+20) OpenCLIP
+Overfull \hbox (7.87633pt too wide) in paragraph at lines 31--31
+[]|\T1/lmtt/m/n/9 src/rerank/train_mlp.py| 
  []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 32--33
+[]|\T1/lmr/m/n/9 (+20) Rerankers de post-procesado
+ []
+
+
+Underfull \hbox (badness 1867) in paragraph at lines 33--34
+[]|\T1/lmr/m/n/9 (+20) Ensemble de sub-mis-sions por
+ []
+
+
+Overfull \hbox (31.50128pt too wide) in paragraph at lines 34--34
+[]|\T1/lmtt/m/n/9 src/utils/preprocess_data.py| 
+ []
+
+
+Overfull \hbox (31.50128pt too wide) in paragraph at lines 35--35
+[]|\T1/lmtt/m/n/9 src/utils/offline_augment.py| 
+ []
+
+
+Underfull \hbox (badness 7064) in paragraph at lines 35--36
+[]|\T1/lmr/m/n/9 (+20) Aumento of-fline de-ter-min-ista
+ []
+
+
+Overfull \hbox (3.83954pt too wide) in paragraph at lines 20--40
+ [][] 
+ []
+
+
+LaTeX Warning: `h' float specifier changed to `ht'.
 
 
 Underfull \hbox (badness 3158) in paragraph at lines 54--54
@@ -1066,85 +1053,9 @@ Overfull \hbox (15.83954pt too wide) in paragraph at lines 47--66
 LaTeX Warning: `h' float specifier changed to `ht'.
 
 ) (./sections/05_experiments.tex
-Underfull \hbox (badness 10000) in paragraph at lines 16--16
-[]|\T1/lmr/m/n/9 (+20) QRLite, Open-CLIP
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 16--17
-[]|\T1/lmtt/m/n/9 train\T1/lmr/m/n/9 (+20) , \T1/lmtt/m/n/9 infer\T1/lmr/m/n/9 
-(+20) ,
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 17--17
-[]|\T1/lmr/m/n/9 (+20) Full-image only vs
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 17--17
-\T1/lmr/m/n/9 (+20) YOLO por crops,
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 17--18
-[]|\T1/lmtt/m/n/9 detection.py\T1/lmr/m/n/9 (+20) ,
- []
-
-
-Underfull \hbox (badness 7540) in paragraph at lines 18--18
-[]|\T1/lmr/m/n/9 (+20) Retrieval in-
- []
-
-
-Underfull \hbox (badness 7649) in paragraph at lines 18--18
-[]|\T1/lmr/m/n/9 (+20) Dot-product di-recto
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 19--19
-[]|\T1/lmr/m/n/9 (+20) Post-
- []
-
-
-Underfull \hbox (badness 2237) in paragraph at lines 19--19
-\T1/lmr/m/n/9 (+20) por cat-e-go-ria, score
- []
-
-
-Underfull \hbox (badness 1466) in paragraph at lines 20--20
-[]|\T1/lmr/m/n/9 (+20) Estrategia fi-
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 20--20
-[]|\T1/lmtt/m/n/9 infer\T1/lmr/m/n/9 (+20) , \T1/lmtt/m/n/9 new_infer\T1/lmr/m/
-n/9 (+20) ,
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 20--20
-\T1/lmtt/m/n/9 infer_phase1\T1/lmr/m/n/9 (+20) ,
- []
-
-
-Overfull \hbox (15.84338pt too wide) in paragraph at lines 12--23
- [][] 
- []
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-Underfull \hbox (badness 3919) in paragraph at lines 39--40
-[]\T1/lmtt/m/n/10 metrics.jsonl\T1/lmr/m/n/10 (+20) , \T1/lmtt/m/n/10 best.pt\T
-1/lmr/m/n/10 (+20) , \T1/lmtt/m/n/10 epoch_X.pt \T1/lmr/m/n/10 (+20) en en-tre-
-
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 41--42
-[]\T1/lmr/m/n/10 (+20) Caches de de-tec-cion en JSON bajo
+Underfull \hbox (badness 10000) in paragraph at lines 20--21
+[]\T1/lmtt/m/n/10 retrieval_openclip/best.pt\T1/lmr/m/n/10 (+20) , \T1/lmtt/m/n
+/10 epoch_X.pt\T1/lmr/m/n/10 (+20) ,
  []
 
 ) (./sections/06_reproducibility.tex
@@ -1161,44 +1072,72 @@ Underfull \hbox (badness 1721) in paragraph at lines 5--6
 m/n/10 torch\T1/lmr/m/n/10 (+20) ,
  []
 
-[3]) (./sections/07_limitations.tex) (./sections/08_conclusion.tex) (./main.bbl
-) (./sections/A_appendix_commands.tex
-Overfull \hbox (52.49911pt too wide) in paragraph at lines 37--37
+) (./sections/07_limitations.tex) (./sections/08_conclusion.tex [2])
+(./main.bbl) (./sections/A_appendix_commands.tex
+Overfull \hbox (52.49911pt too wide) in paragraph at lines 36--36
+[]  \T1/lmtt/m/n/10 --bundles_manifest data/manifests/train_manifest.jsonl \[] 
+
+ []
+
+
+Overfull \hbox (52.49911pt too wide) in paragraph at lines 51--51
 []\T1/lmtt/m/n/10 python -m src.infer infer.checkpoint_path=<ruta_a_best.pt>[] 
 
  []
 
-[4]
-Overfull \hbox (73.49905pt too wide) in paragraph at lines 42--42
+
+Overfull \hbox (73.49905pt too wide) in paragraph at lines 56--56
 []\T1/lmtt/m/n/10 python -m src.new_infer infer.checkpoint_path=<ruta_a_best.pt
 >[] 
  []
 
 
-Overfull \hbox (89.24901pt too wide) in paragraph at lines 47--47
+Overfull \hbox (89.24901pt too wide) in paragraph at lines 61--61
 []\T1/lmtt/m/n/10 python -m src.infer_phase1 infer.checkpoint_path=<ruta_a_best
 .pt>[] 
  []
 
 
-Overfull \hbox (78.74904pt too wide) in paragraph at lines 52--52
+Overfull \hbox (78.74904pt too wide) in paragraph at lines 66--66
 []\T1/lmtt/m/n/10 python -m src.infer_top1 infer.checkpoint_path=<ruta_a_best.p
 t>[] 
  []
 
 
-Overfull \hbox (15.74922pt too wide) in paragraph at lines 59--59
+Overfull \hbox (15.74922pt too wide) in paragraph at lines 73--73
 []  \T1/lmtt/m/n/10 --checkpoint outputs/retrieval_openclip/best.pt \[] 
  []
 
 
-Overfull \hbox (62.99908pt too wide) in paragraph at lines 59--59
+Overfull \hbox (62.99908pt too wide) in paragraph at lines 73--73
 []  \T1/lmtt/m/n/10 --submission-out outputs/retrieval_openclip/submission.csv[
 ] 
  []
 
 
-Overfull \hbox (10.49924pt too wide) in paragraph at lines 66--66
+Overfull \hbox (115.49893pt too wide) in paragraph at lines 82--82
+[]  \T1/lmtt/m/n/10 --query-embeddings artifacts/embeddings/train_bundle_embedd
+ings.pt \[] 
+ []
+
+
+Overfull \hbox (31.49918pt too wide) in paragraph at lines 82--82
+[]  \T1/lmtt/m/n/10 --product-embeddings outputs/product_embeddings.pt \[] 
+ []
+
+
+Overfull \hbox (20.9992pt too wide) in paragraph at lines 82--82
+[]  \T1/lmtt/m/n/10 --train-csv data/bundles_product_match_train.csv \[] 
+ []
+
+
+Overfull \hbox (73.49905pt too wide) in paragraph at lines 88--88
+[]\T1/lmtt/m/n/10 python src/ensemble_csv.py outputs/sub1.csv outputs/sub2.csv 
+\[] 
+ []
+
+
+Overfull \hbox (10.49924pt too wide) in paragraph at lines 95--95
 []  \T1/lmtt/m/n/10 --out-csv outputs/ts_date_alignment_report.csv \[] 
  []
 
@@ -1214,40 +1153,39 @@ Before submitting the final camera ready copy, remember to:
  uses only Type 1 fonts and that every step in the generation
  process uses the appropriate paper size.
 
-[5
-
-] (./main.aux)
+[3] (./main.aux)
  ***********
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-22>
  ***********
 Package rerunfilecheck Info: File `main.out' has not changed.
-(rerunfilecheck)             Checksum: FAB9FD38053A3D0ADF31DB97A1035B66;6890.
+(rerunfilecheck)             Checksum: 8793E6683DF022DD529900BE816CA77F;6011.
  ) 
 Here is how much of TeX's memory you used:
- 13994 strings out of 474222
- 220866 string characters out of 5748732
- 1956975 words of memory out of 5000000
- 35733 multiletter control sequences out of 15000+600000
- 780119 words of font info for 253 fonts, out of 8000000 for 9000
+ 13889 strings out of 474222
+ 219727 string characters out of 5748732
+ 1951975 words of memory out of 5000000
+ 35712 multiletter control sequences out of 15000+600000
+ 773494 words of font info for 216 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,14n,79p,1001b,627s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,10n,79p,1001b,558s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texmf/fonts/type1/public/lm/lmbx10.pfb></usr/share/texmf/fonts/ty
 pe1/public/lm/lmbx9.pfb></usr/share/texmf/fonts/type1/public/lm/lmbxi10.pfb></u
 sr/share/texmf/fonts/type1/public/lm/lmcsc10.pfb></usr/share/texmf/fonts/type1/
-public/lm/lmmi10.pfb></usr/share/texmf/fonts/type1/public/lm/lmr10.pfb></usr/sh
-are/texmf/fonts/type1/public/lm/lmr12.pfb></usr/share/texmf/fonts/type1/public/
-lm/lmr17.pfb></usr/share/texmf/fonts/type1/public/lm/lmr8.pfb></usr/share/texmf
-/fonts/type1/public/lm/lmr9.pfb></usr/share/texmf/fonts/type1/public/lm/lmri10.
-pfb></usr/share/texmf/fonts/type1/public/lm/lmri8.pfb></usr/share/texmf/fonts/t
-ype1/public/lm/lmsy10.pfb></usr/share/texmf/fonts/type1/public/lm/lmsy7.pfb></u
-sr/share/texmf/fonts/type1/public/lm/lmsy8.pfb></usr/share/texmf/fonts/type1/pu
-blic/lm/lmsy9.pfb></usr/share/texmf/fonts/type1/public/lm/lmtt10.pfb></usr/shar
-e/texmf/fonts/type1/public/lm/lmtt9.pfb>
-Output written on main.pdf (5 pages, 393693 bytes).
+public/lm/lmmi10.pfb></usr/share/texmf/fonts/type1/public/lm/lmmi7.pfb></usr/sh
+are/texmf/fonts/type1/public/lm/lmr10.pfb></usr/share/texmf/fonts/type1/public/
+lm/lmr12.pfb></usr/share/texmf/fonts/type1/public/lm/lmr17.pfb></usr/share/texm
+f/fonts/type1/public/lm/lmr7.pfb></usr/share/texmf/fonts/type1/public/lm/lmr8.p
+fb></usr/share/texmf/fonts/type1/public/lm/lmr9.pfb></usr/share/texmf/fonts/typ
+e1/public/lm/lmri10.pfb></usr/share/texmf/fonts/type1/public/lm/lmri8.pfb></usr
+/share/texmf/fonts/type1/public/lm/lmsy10.pfb></usr/share/texmf/fonts/type1/pub
+lic/lm/lmsy7.pfb></usr/share/texmf/fonts/type1/public/lm/lmsy9.pfb></usr/share/
+texmf/fonts/type1/public/lm/lmtk10.pfb></usr/share/texmf/fonts/type1/public/lm/
+lmtt10.pfb></usr/share/texmf/fonts/type1/public/lm/lmtt9.pfb>
+Output written on main.pdf (3 pages, 408583 bytes).
 PDF statistics:
- 347 PDF objects out of 1000 (max. 8388607)
- 299 compressed objects within 3 object streams
- 75 named destinations out of 1000 (max. 500000)
- 48457 words of extra memory for PDF output out of 51595 (max. 10000000)
+ 319 PDF objects out of 1000 (max. 8388607)
+ 270 compressed objects within 3 object streams
+ 59 named destinations out of 1000 (max. 500000)
+ 44857 words of extra memory for PDF output out of 51595 (max. 10000000)
 

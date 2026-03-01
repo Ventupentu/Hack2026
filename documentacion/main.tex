@@ -18,11 +18,11 @@
   linkcolor=blue!50!black,
   citecolor=blue!50!black,
   urlcolor=blue!50!black,
-  pdftitle={Recuperacion de Bundle a Producto en Moda},
+  pdftitle={goofytex: Retrieval de Bundle a Producto en Moda},
   pdfauthor={Equipo goofytex}
 }
 
-\title{Recuperacion de Bundle a Producto en Moda:\\Metodologia CRISP-DM y Documentacion Tecnica}
+\title{goofytex: Retrieval de Bundle a Producto en Moda\\Documentacion Tecnica del Sistema}
 \author{
 \IEEEauthorblockN{Equipo goofytex}
 \IEEEauthorblockA{Informe Tecnico Interno}
@@ -34,11 +34,11 @@
 \maketitle
 
 \begin{abstract}
-Este documento describe el sistema de retrieval bundle$\rightarrow$product de goofytex usando metodologia CRISP-DM. Se cubren datos, preprocesamiento, modelado, implementacion e inferencia del repositorio, incluyendo familias de embeddings probadas (QRLite, OpenCLIP Marqo Fashion SigLIP y SigLIP), deteccion de prendas basada en YOLO y variantes de pipeline. El foco es tecnico y reproductible: se documentan componentes, flujos y decisiones de ingenieria sin reportar resultados cuantitativos.
+Este documento describe el sistema de retrieval bundle$\rightarrow$product de goofytex. Se detallan las rutas actuales del repositorio tras la reorganizacion de carpetas, incluyendo preprocesamiento en \texttt{src/utils/}, entrenamiento e inferencia en \texttt{src/}, y capas de reranking/ensemble. El objetivo es mantener una referencia tecnica reproducible y alineada con la estructura real del codigo.
 \end{abstract}
 
 \begin{IEEEkeywords}
-retrieval visual, CRISP-DM, OpenCLIP, SigLIP, YOLO, IA en moda
+retrieval visual, OpenCLIP, SigLIP, YOLO, reranking, reproducibilidad
 \end{IEEEkeywords}
 
 \input{sections/01_introduction}

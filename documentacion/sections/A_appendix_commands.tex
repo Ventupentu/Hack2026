@@ -9,24 +9,38 @@ pip install open_clip_torch ultralyticsplus
 
 \subsection{Descarga de imagenes}
 \begin{verbatim}
-bash download.sh
+bash src/utils/download.sh
 \end{verbatim}
 
 \subsection{Preprocesamiento}
 \begin{verbatim}
-python preprocess_data.py \
+python src/utils/preprocess_data.py \
   --skip_download \
   --out_dir data \
   --val_ratio 0.1 \
   --seed 42
 \end{verbatim}
 
-\subsection{Generacion de metadata de genero}
+\subsection{Aumento offline}
+\begin{verbatim}
+python src/utils/offline_augment.py \
+  --bundles_manifest data/manifests/train_manifest.jsonl \
+  --products_manifest data/product_dataset.csv \
+  --products_images_dir data/product_images \
+  --out_dir data/offline_aug \
+  --bundles_num_augs 4 \
+  --products_num_augs 2 \
+  --img_size 224 \
+  --seed 42 \
+  --workers 8
+\end{verbatim}
+
+\subsection{Generacion de genero por producto}
 \begin{verbatim}
 python src/utils/add_gender.py
 \end{verbatim}
 
-\subsection{Entrenamiento (Hydra)}
+\subsection{Entrenamiento}
 \begin{verbatim}
 python -m src.train
 \end{verbatim}
@@ -51,11 +65,26 @@ python -m src.infer_phase1 infer.checkpoint_path=<ruta_a_best.pt>
 python -m src.infer_top1 infer.checkpoint_path=<ruta_a_best.pt>
 \end{verbatim}
 
-\subsection{Script legacy OpenCLIP}
+\subsection{Inferencia OpenCLIP legacy}
 \begin{verbatim}
 python -m src.infer_openclip \
   --checkpoint outputs/retrieval_openclip/best.pt \
   --submission-out outputs/retrieval_openclip/submission.csv
+\end{verbatim}
+
+\subsection{Reranker MLP}
+\begin{verbatim}
+python -m src.rerank.train_mlp \
+  --query-embeddings artifacts/embeddings/train_bundle_embeddings.pt \
+  --product-embeddings outputs/product_embeddings.pt \
+  --train-csv data/bundles_product_match_train.csv \
+  --output artifacts/rerank/mlp_reranker.pt
+\end{verbatim}
+
+\subsection{Ensemble RRF}
+\begin{verbatim}
+python src/ensemble_csv.py outputs/sub1.csv outputs/sub2.csv \
+  -o outputs/ensemble_submission.csv
 \end{verbatim}
 
 \subsection{Reporte de timestamps}
