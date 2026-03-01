@@ -2,30 +2,37 @@
 
 \subsection{Estrategia de Evaluacion Local}
 
-El repositorio ofrece dos rutas de validacion local:
+La evaluacion local se ejecuta en inferencia con split por \texttt{bundle\_asset\_id} controlado por \texttt{infer.val\_ratio}. Segun entrypoint, se reportan \texttt{Hit@K}/\texttt{Recall@K} para \texttt{infer.eval\_ks}:
 \begin{enumerate}
-  \item Modo baseline (\texttt{src/infer.py}) muestrea bundles de validacion con \texttt{infer.val\_ratio} y reporta \texttt{hit@K}/\texttt{recall@K}.
-  \item Modo entrenamiento (\texttt{src/models/retrieval\_openclip.py}) evalua \texttt{recall@K} tras cada epoca, donde $K=\texttt{params.recall\_k}$.
+  \item \texttt{src.infer} (pipeline principal).
+  \item \texttt{src.new\_infer} (v8).
+  \item \texttt{src.infer\_phase1}.
+  \item \texttt{src.infer\_top1}.
 \end{enumerate}
-
-Los productos se indexan una vez por pasada de validacion, los bundles se codifican y los vecinos top-K mas cercanos se recuperan por similitud coseno.
 
 \subsection{Artefactos de Salida}
 
-Principales artefactos generados por el flujo de entrenamiento/inferencia:
+Artefactos frecuentes del flujo train/infer:
 \begin{itemize}
-  \item \texttt{metrics.jsonl}: perdida de entrenamiento por epoca y recall de validacion.
-  \item \texttt{best.pt}: mejor checkpoint segun la metrica de recall.
-  \item \texttt{test\_submission.csv}: archivo final de predicciones para subir a la competicion.
-  \item \texttt{val\_metrics.json}: resumen de ejecucion baseline y metricas locales.
+  \item \texttt{metrics.jsonl}, \texttt{best.pt}, \texttt{epoch\_X.pt} en entrenamiento.
+  \item \texttt{test\_submission.csv} y \texttt{val\_metrics.json} para \texttt{src.infer}.
+  \item \texttt{test\_submission\_v8.csv}, \texttt{val\_metrics\_v8.json} para \texttt{src.new\_infer}.
+  \item \texttt{test\_submission\_phase1.csv}, \texttt{val\_metrics\_phase1.json} para \texttt{src.infer\_phase1}.
+  \item \texttt{test\_submission\_top1.csv}, \texttt{val\_metrics\_top1.json} para \texttt{src.infer\_top1}.
 \end{itemize}
 
-\subsection{Ablaciones Recomendadas}
+\subsection{Reportes Analiticos Observados en el Workspace}
 
-Para medir el impacto de los componentes principales, se recomiendan las siguientes ablaciones:
+\texttt{outputs/ts\_date\_alignment\_report.csv} (1,876 bundles):
 \begin{itemize}
-  \item Productos solo imagen vs. embeddings de producto imagen+texto.
-  \item Codificacion de bundle con imagen completa vs. agregacion de regiones guiada por deteccion.
-  \item Sin aumento offline vs. aumento offline determinista.
-  \item Single-GPU vs. multi-GPU, con semilla fija y mismo batch efectivo.
+  \item 6,493 productos enlazados con timestamp disponible.
+  \item 12.26\% de productos comparten fecha exacta bundle-producto.
+  \item 54.57\% comparten mes.
+  \item 81.01\% comparten trimestre.
+\end{itemize}
+
+\texttt{outputs/category\_section\_summary.json}:
+\begin{itemize}
+  \item 88 categorias totales en joins train.
+  \item Para categorias con al menos 30 muestras: 9 son single-section y 10 casi single-section (umbral de pureza 0.95).
 \end{itemize}

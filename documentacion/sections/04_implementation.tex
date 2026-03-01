@@ -1,17 +1,18 @@
 \section{Detalles de Implementacion}
 
-\subsection{Configuracion y Puntos de Entrada}
+\subsection{Configuracion y Entrypoints}
 
-El proyecto usa Hydra~\cite{yadan2019hydra} con dataclasses tipadas (\texttt{src/config.py}). Los principales puntos de entrada son:
+El proyecto usa Hydra con dataclasses tipadas (\texttt{src/config.py}). Entrypoints principales:
 \begin{itemize}
   \item \texttt{python -m src.train}: entrenamiento OpenCLIP.
-  \item \texttt{python -m src.infer}: inferencia baseline preentrenada + particion de validacion local.
-  \item \texttt{python -m src.infer\_openclip}: inferencia desde un checkpoint entrenado de OpenCLIP.
+  \item \texttt{python -m src.infer}: inferencia principal (salida en directorio Hydra).
+  \item \texttt{python -m src.new\_infer}: inferencia v8 (salida en \texttt{outputs/}).
+  \item \texttt{python -m src.infer\_phase1}: inferencia con seccion + zero-shot.
+  \item \texttt{python -m src.infer\_top1}: inferencia top-1 por crop.
+  \item \texttt{python -m src.infer\_openclip}: inferencia simple por argparse.
 \end{itemize}
 
-Los parametros principales de ejecucion incluyen batch size, epocas, learning rate, AMP, acumulacion de gradiente, cortes de recall y ajustes opcionales de deteccion (\texttt{bbox\_*}).
-
-\subsection{Arquitectura de Codigo}
+\subsection{Mapa de Modulos}
 
 \begin{table}[h]
   \centering
@@ -20,31 +21,27 @@ Los parametros principales de ejecucion incluyen batch size, epocas, learning ra
     \toprule
     \textbf{Modulo} & \textbf{Responsabilidad} \\
     \midrule
-    \texttt{src/train.py} & Bootstrap de Hydra y despacho al trainer. \\
-    \texttt{src/models/retrieval\_openclip.py} & Bucle principal de entrenamiento/validacion OpenCLIP y checkpoints. \\
-    \texttt{src/infer.py} & Extraccion de embeddings baseline, retrieval y exportacion de entrega. \\
-    \texttt{src/infer\_openclip.py} & Inferencia OpenCLIP para bundles de test desde checkpoint. \\
-    \texttt{src/detection.py} & Wrapper del detector YOLO y utilidades de extraccion de cajas. \\
-    \texttt{src/utils/retrieval.py} & Helpers de similitud y retrieval Top-K. \\
-    \texttt{src/utils/metrics.py} & Calculo de Hit@K y Recall@K. \\
-    \texttt{preprocess\_data.py} & Validacion de integridad del dataset, split, manifiestos y estadisticas. \\
-    \texttt{offline\_augment.py} & Aumento offline y manifiestos de aumento. \\
+    \texttt{src/train.py} & Bootstrap Hydra y despacho de backend de entrenamiento. \\
+    \texttt{src/models/retrieval\_openclip.py} & Loop de train/val, checkpoints y metricas JSONL. \\
+    \texttt{src/infer.py} & Inferencia principal con deteccion opcional y post-procesado configurable. \\
+    \texttt{src/new\_infer.py} & Variante per-crop + TTA + indice FAISS opcional. \\
+    \texttt{src/infer\_phase1.py} & Variante con indices por seccion y zero-shot de categoria. \\
+    \texttt{src/infer\_top1.py} & Variante top-1 por crop para salidas compactas. \\
+    \texttt{src/infer\_openclip.py} & Script legacy de inferencia con argumentos CLI. \\
+    \texttt{src/detection.py} & Wrapper de detector YOLO clothing y utilidades de cajas. \\
+    \texttt{src/utils/metrics.py} & Metricas Hit@K y Recall@K. \\
+    \texttt{src/utils/add\_gender.py} & Generacion de \texttt{product\_dataset\_with\_gender.csv}. \\
+    \texttt{src/utils/check\_link\_timestamps.py} & Reporte de consistencia temporal bundle-producto. \\
     \bottomrule
   \end{tabular}
   \caption{Modulos principales y responsabilidades.}
   \label{tab:code-map}
 \end{table}
 
-\subsection{Aspectos Clave del Loop de Entrenamiento}
+\subsection{Notas Operativas Importantes}
 
-La implementacion de entrenamiento OpenCLIP incluye:
 \begin{enumerate}
-  \item Resolucion dinamica de dispositivo (CPU/CUDA) y DataParallel multi-GPU opcional.
-  \item Scheduler de learning rate coseno con 10\% de warmup.
-  \item Precision mixta opcional via \texttt{torch.cuda.amp}.
-  \item Logging periodico, validacion por epoca, anexado de metricas en JSONL y checkpoints (\texttt{epoch\_X.pt}, \texttt{best.pt}).
+  \item \texttt{src/train.py} espera por defecto \texttt{data/product\_dataset\_with\_gender.csv} como manifiesto de productos.
+  \item Si CUDA no esta disponible y se solicita \texttt{device=cuda}, el codigo hace fallback a CPU en varios entrypoints.
+  \item La dependencia de deteccion YOLO es opcional en inferencia, pero necesaria para variantes guiadas por boxes.
 \end{enumerate}
-
-\subsection{Logica de Inferencia y Fallback}
-
-Ambos scripts de inferencia generan una fila por producto predicho y limitan la salida a 15 por bundle. Si no hay embeddings de bundle disponibles (por ejemplo, imagen ausente), se usan como fallback productos populares obtenidos de enlaces de train.

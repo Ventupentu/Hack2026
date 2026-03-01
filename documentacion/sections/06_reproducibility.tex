@@ -2,31 +2,39 @@
 
 \subsection{Entorno}
 
-Las dependencias base estan listadas en \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch} y \texttt{torchvision}. Paquetes adicionales requeridos por funciones avanzadas:
+Dependencias base en \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, \texttt{torchvision}.
+
+Dependencias adicionales usadas por pipelines avanzados:
 \begin{itemize}
-  \item \texttt{open\_clip\_torch} para el backend OpenCLIP.
-  \item \texttt{ultralyticsplus} para la deteccion de ropa en bundles.
+  \item \texttt{open\_clip\_torch} (entrenamiento/inferencia OpenCLIP).
+  \item \texttt{ultralyticsplus} (deteccion YOLO clothing).
+  \item \texttt{faiss} (opcional, aceleracion de busqueda en \texttt{src.new\_infer.py}).
 \end{itemize}
 
-\subsection{Controles de Determinismo}
+\subsection{Determinismo}
 
-El codigo fija explicitamente semillas aleatorias (\texttt{random}, \texttt{numpy}, \texttt{torch}). El aumento offline usa semillas estables basadas en hash por asset e indice de aumento. Esto permite preprocesamiento repetible y comportamiento de entrenamiento consistente bajo configuracion fija.
+El codigo fija semillas de \texttt{random}, \texttt{numpy} y \texttt{torch}. \texttt{offline\_augment.py} usa semillas estables por hash de \texttt{asset\_id}+indice, permitiendo regenerar exactamente las mismas vistas sinteticas.
 
 \subsection{Configuracion Hydra}
 
-La configuracion se divide en:
+Se centraliza en:
 \begin{itemize}
-  \item \texttt{config/config.yaml}: parametros de entrenamiento e inferencia.
-  \item \texttt{config/files/file.yaml}: rutas de dataset/imagenes/cache.
+  \item \texttt{config/config.yaml}: hiperparametros de train/infer.
+  \item \texttt{config/files/file.yaml}: rutas de datos/imagenes/cache.
 \end{itemize}
 
-Los directorios de salida de Hydra guardan artefactos especificos de cada ejecucion, haciendo los experimentos trazables sin gestion manual de rutas.
+Los runs Hydra crean directorios de salida trazables por fecha/hora para comparar experimentos.
+
+\subsection{Precondicion de Entrenamiento}
+
+El entrypoint \texttt{src.train.py} apunta por defecto a \texttt{data/product\_dataset\_with\_gender.csv}; por tanto, para reproducir train completo es necesario ejecutar antes \texttt{python src/utils/add\_gender.py}.
 
 \subsection{Contrato de Entrega}
 
-El CSV final debe contener:
+El CSV final usa columnas:
 \begin{itemize}
   \item \texttt{bundle\_asset\_id}
   \item \texttt{product\_asset\_id}
 \end{itemize}
-con hasta 15 filas por bundle, ordenadas por confianza del modelo.
+
+La evaluacion considera el orden de ranking y hasta 15 predicciones por bundle.

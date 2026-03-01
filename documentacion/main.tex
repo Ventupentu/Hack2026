@@ -34,7 +34,7 @@
 \maketitle
 
 \begin{abstract}
-Este documento describe el sistema completo de retrieval de Hack2026 para descomposicion de bundles de moda, donde cada imagen de bundle debe asociarse con uno o mas identificadores de producto. La implementacion combina un pipeline baseline de retrieval visual preentrenado y un pipeline avanzado de entrenamiento con OpenCLIP, con deteccion opcional de regiones de ropa. Se detallan el preprocesamiento de datos, el aumento offline, el entrenamiento del modelo, la validacion local, la inferencia y la generacion de entregas. El paper se apoya en el codigo del repositorio, con enfasis en reproducibilidad y decisiones de ingenieria.
+Este documento describe el sistema completo de retrieval de Hack2026 para descomposicion de bundles de moda, donde cada imagen de bundle debe asociarse con uno o mas identificadores de producto. La implementacion actual se apoya en OpenCLIP (Marqo Fashion SigLIP), con deteccion opcional de regiones de ropa y varias estrategias de inferencia (pipeline principal, per-crop v8, phase1 por seccion y top-1 por crop). Se detallan el preprocesamiento de datos, el aumento offline, el entrenamiento del modelo, la validacion local, la inferencia y la generacion de entregas. El paper se apoya en el codigo del repositorio, con enfasis en reproducibilidad y decisiones de ingenieria.
 \end{abstract}
 
 \begin{IEEEkeywords}
