@@ -23,8 +23,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from config import InditexConfig
-from detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
+from src.config import InditexConfig
+from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):
@@ -891,6 +891,29 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         torch.cuda.amp.GradScaler(enabled=True) if params.amp and device.type == "cuda" else None
     )
     best_recall = -1.0
+    start_epoch = 1
+
+    if params.resume_from:
+        resume_path = Path(params.resume_from).expanduser().resolve()
+        if resume_path.exists():
+            print(f"Loading checkpoint for resume: {resume_path}")
+            ckpt = torch.load(resume_path, map_location="cpu")
+            core_model.load_state_dict(ckpt["model"])
+            if "optimizer" in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt["optimizer"])
+                except ValueError as e:
+                    print(f"Warning: Failed to load optimizer state dict, starting with fresh optimizer: {e}")
+            if "scaler" in ckpt and scaler is not None and ckpt["scaler"] is not None:
+                scaler.load_state_dict(ckpt["scaler"])
+            if "epoch" in ckpt:
+                start_epoch = ckpt["epoch"] + 1
+            if "best_metric" in ckpt:
+                best_recall = ckpt["best_metric"]
+            print(f"Resumed from epoch {start_epoch - 1}, best recall: {best_recall:.4f}")
+        else:
+            print(f"Warning: resume_from path not found: {resume_path}")
+
     train_boxes = sum(len(v) for v in (train_bundle_to_boxes or {}).values())
     val_boxes = sum(len(v) for v in (val_bundle_to_boxes or {}).values())
     print(
@@ -910,7 +933,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         f"max_hard_negatives={params.max_hard_negatives}"
     )
 
-    for epoch in range(1, params.epochs + 1):
+    for epoch in range(start_epoch, params.epochs + 1):
         epoch_start = time.time()
         image_model.train()
         running_loss = 0.0
@@ -932,59 +955,48 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
             with torch.autocast(device_type=device.type, enabled=params.amp and device.type == "cuda"):
                 bundle_emb = F.normalize(image_model(bundle_imgs).float(), p=2, dim=1)
+                
+                # Encode products (potentially multimodal)
                 if "product_text" in batch and batch["product_text"] is not None:
                     product_texts = batch["product_text"].to(device, non_blocking=True)
                     product_emb = F.normalize(image_model(product_imgs, text=product_texts).float(), p=2, dim=1)
                 else:
                     product_emb = F.normalize(image_model(product_imgs).float(), p=2, dim=1)
-
-                sims = bundle_emb @ product_emb.T
+                
+                # Forward InfoNCE text/multimodal loss
+                # Extract bundle IDs directly from the batch to create a positive mask
+                bundle_ids_list = batch["bundle_id"]
+                n_samples = len(bundle_ids_list)
+                
+                # (batch_size, batch_size): 1 where bundle_id is identical, 0 otherwise
+                pos_mask = torch.zeros((n_samples, n_samples), dtype=torch.bool, device=device)
+                for i in range(n_samples):
+                    for j in range(n_samples):
+                        if bundle_ids_list[i] == bundle_ids_list[j]:
+                            pos_mask[i, j] = True
+                
+                # Retrieve logit scale (temperature) from params if available, else default to fixed scalar
+                # Here we use the learnable scale if configured, falling back to a fixed constant
                 if params.learnable_temperature:
                     logit_scale = get_logit_scale_parameter(image_model).exp().clamp(max=100.0)
                 else:
-                    logit_scale = torch.tensor(1.0 / 0.07, device=device, dtype=sims.dtype)
-                logits = sims * logit_scale
-
-                if params.use_soft_targets:
-                    target_matrix = build_soft_targets(
-                        product_ids=batch_product_ids,
-                        positive_product_ids=batch_positive_ids,
-                        device=device,
-                        dtype=logits.dtype,
-                    )
-                    loss_b2p = soft_cross_entropy(logits, target_matrix)
-                    loss_p2b = soft_cross_entropy(logits.T, target_matrix.T)
-                else:
-                    targets = torch.arange(logits.shape[0], device=device)
-                    target_matrix = F.one_hot(targets, num_classes=logits.shape[1]).to(logits.dtype)
-                    loss_b2p = F.cross_entropy(logits, targets)
-                    loss_p2b = F.cross_entropy(logits.T, targets)
-
-                hard_neg_loss = logits.new_zeros(())
-                should_mine = (
-                    params.mine_every > 0
-                    and params.hard_neg_top_k > 0
-                    and params.max_hard_negatives > 0
-                    and params.hard_neg_weight > 0.0
-                    and (step % params.mine_every == 0)
-                )
-                if should_mine:
-                    hard_k = min(params.hard_neg_top_k, params.max_hard_negatives)
-                    hard_neg_loss_b2p = hard_negative_margin_loss(
-                        sims=sims,
-                        targets=target_matrix,
-                        top_k=hard_k,
-                        margin=params.hard_neg_margin,
-                    )
-                    hard_neg_loss_p2b = hard_negative_margin_loss(
-                        sims=sims.T,
-                        targets=target_matrix.T,
-                        top_k=hard_k,
-                        margin=params.hard_neg_margin,
-                    )
-                    hard_neg_loss = 0.5 * (hard_neg_loss_b2p + hard_neg_loss_p2b)
-
-                loss = 0.5 * (loss_b2p + loss_p2b) + (params.hard_neg_weight * hard_neg_loss)
+                    logit_scale = torch.tensor(1.0 / 0.07, device=device)
+                    
+                logits = (bundle_emb @ product_emb.T) * logit_scale
+                
+                # Multi-positive cross entropy loss
+                # Normalize target distribution so row sums = 1
+                target_dist = pos_mask.float()
+                target_dist = target_dist / target_dist.sum(dim=1, keepdim=True)
+                
+                log_probs_b2p = F.log_softmax(logits, dim=1)
+                loss_b2p = -(target_dist * log_probs_b2p).sum(dim=1).mean()
+                
+                log_probs_p2b = F.log_softmax(logits.T, dim=1)
+                # target_dist.T is symmetric since pos_mask is symmetric
+                loss_p2b = -(target_dist.T * log_probs_p2b).sum(dim=1).mean()
+                
+                loss = 0.5 * (loss_b2p + loss_p2b)
                 loss = loss / params.grad_accum
 
             if scaler is not None:
@@ -1004,8 +1016,9 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
             loss_item = float(loss.item() * params.grad_accum)
             running_loss += loss_item
-            running_hard_neg += float(hard_neg_loss.detach().item())
-            running_logit_scale += float(logit_scale.detach().item())
+            # For the main branch implementation, hard negative loss is 0
+            running_hard_neg += 0.0
+            running_logit_scale += float(logit_scale.detach().item()) if isinstance(logit_scale, torch.Tensor) else float(logit_scale)
             count_steps += 1
 
             if step % params.log_every == 0:
