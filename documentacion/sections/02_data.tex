@@ -1,23 +1,12 @@
-<<<<<<< HEAD
 \section{Datos y Preprocesamiento}
 
-\subsection{Datasets de Origen}
-
-Las entradas principales son cuatro CSV. Su rol funcional se resume en la Tabla~\ref{tab:datasets}.
-=======
-\section{Data and Preprocessing}
-
-\subsection{Source Datasets}
-
-The core inputs are four CSV files. Their functional role in the project is summarized in Table~\ref{tab:datasets}.
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+\subsection{Datasets de origen}
 
 \begin{table}[h]
   \centering
   \small
   \begin{tabular}{p{0.36\linewidth} p{0.56\linewidth}}
     \toprule
-<<<<<<< HEAD
     \textbf{Archivo} & \textbf{Proposito} \\
     \midrule
     \texttt{data/bundles\_dataset.csv} & Catalogo de bundles y URLs de imagen. \\
@@ -30,73 +19,20 @@ The core inputs are four CSV files. Their functional role in the project is summ
   \label{tab:datasets}
 \end{table}
 
-\subsection{Snapshot Local (2026-02-28)}
+\subsection{Rutas de preprocesamiento actualizadas}
 
-Inspeccion directa del workspace:
+El preprocesamiento y utilidades de datos se ejecutan desde \texttt{src/utils/}:
 \begin{itemize}
-  \item Bundles en catalogo: 2,331.
-  \item Productos en catalogo: 27,688.
-  \item Relaciones train: 6,493 (1,876 bundles unicos, 4,012 productos unicos).
-  \item Filas test: 455 (sin IDs de bundle fuera del catalogo).
-  \item Imagenes locales: 2,331 bundles y 27,688 productos.
+  \item \texttt{src/utils/download.sh}
+  \item \texttt{src/utils/preprocess\_data.py}
+  \item \texttt{src/utils/offline\_augment.py}
+  \item \texttt{src/utils/add\_gender.py}
 \end{itemize}
 
-\subsection{Pipeline de Preprocesamiento}
-
-\texttt{preprocess\_data.py} implementa validacion de esquema, chequeos de integridad referencial, split train/val por \texttt{bundle\_asset\_id}, descarga opcional de imagenes y generacion de manifiestos. Artefactos principales:
+Artefactos principales generados:
 \begin{itemize}
   \item \texttt{data/manifests/train\_manifest.jsonl}
   \item \texttt{data/manifests/val\_manifest.jsonl}
-  \item \texttt{data/labels.json}, \texttt{data/label2idx.json}, \texttt{data/stats.json}
+  \item \texttt{data/offline\_aug/}
+  \item \texttt{data/product\_dataset\_with\_gender.csv}
 \end{itemize}
-
-En el estado actual, \texttt{data/stats.json} reporta 86 etiquetas limpias y 6,493 relaciones validas tras limpieza.
-
-\subsection{Aumento Offline}
-
-\texttt{offline\_augment.py} genera vistas sinteticas para bundles y productos con semillas deterministas por asset+indice de augmentation. El script soporta manifests CSV o JSONL y guarda:
-=======
-    \textbf{File} & \textbf{Purpose} \\
-    \midrule
-    \texttt{data/bundles\_dataset.csv} & Bundle catalog and bundle image URLs. \\
-    \texttt{data/product\_dataset.csv} & Product catalog, product image URLs, and textual descriptions. \\
-    \texttt{data/bundles\_product\_match\_train.csv} & Supervised bundle-product links for training. \\
-    \texttt{data/bundles\_product\_match\_test.csv} & Test template where \texttt{product\_asset\_id} must be predicted. \\
-    \bottomrule
-  \end{tabular}
-  \caption{Repository datasets used by training and inference.}
-  \label{tab:datasets}
-\end{table}
-
-\subsection{Preprocessing Pipeline}
-
-Script \texttt{preprocess\_data.py} provides:
-\begin{enumerate}
-  \item Schema checks for required columns and referential integrity.
-  \item Cleaning of product description labels, including exclusion of predefined cosmetic/perfume categories.
-  \item Stratified train/validation split by number of labels per bundle.
-  \item Concurrent image download with retry logic and forbidden URL logging.
-  \item JSONL manifest generation and preprocessing statistics.
-\end{enumerate}
-
-The script produces:
-\begin{itemize}
-  \item \texttt{manifests/train\_manifest.jsonl}
-  \item \texttt{manifests/val\_manifest.jsonl}
-  \item \texttt{labels.json}, \texttt{label2idx.json}, and \texttt{stats.json}
-\end{itemize}
-
-\subsection{Offline Augmentation}
-
-Script \texttt{offline\_augment.py} generates deterministic, seed-controlled augmented views for both bundles and products. It applies resized crops, color jitter, optional horizontal flips, Gaussian blur, optional cutout (bundles), and JPEG quality perturbation. Augmented images and manifests are saved as:
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
-\begin{itemize}
-  \item \texttt{bundles\_aug/*.jpg}, \texttt{bundles\_aug\_manifest.jsonl}
-  \item \texttt{products\_aug/*.jpg}, \texttt{products\_aug\_manifest.jsonl}
-\end{itemize}
-
-<<<<<<< HEAD
-La motivacion principal es robustecer embeddings ante la restriccion de pocas vistas por producto.
-=======
-This design is aligned with the one-image-per-product constraint, where robust product representations require synthetic view expansion.
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4

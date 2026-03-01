@@ -18,25 +18,14 @@
   linkcolor=blue!50!black,
   citecolor=blue!50!black,
   urlcolor=blue!50!black,
-<<<<<<< HEAD
-  pdftitle={Recuperacion de Bundle a Producto en Moda},
-  pdfauthor={Equipo Hack2026}
+  pdftitle={goofytex: Retrieval de Bundle a Producto en Moda},
+  pdfauthor={Equipo goofytex}
 }
 
-\title{Recuperacion de Bundle a Producto en Moda:\\Paper Tecnico y Documentacion del Sistema}
+\title{goofytex: Retrieval de Bundle a Producto en Moda\\Documentacion Tecnica del Sistema}
 \author{
-\IEEEauthorblockN{Equipo Hack2026}
+\IEEEauthorblockN{Equipo goofytex}
 \IEEEauthorblockA{Informe Tecnico Interno}
-=======
-  pdftitle={Bundle-to-Product Retrieval in Fashion},
-  pdfauthor={Hack2026 Team}
-}
-
-\title{Bundle-to-Product Retrieval in Fashion:\\Technical Paper and System Documentation}
-\author{
-\IEEEauthorblockN{Hack2026 Team}
-\IEEEauthorblockA{Internal Technical Report}
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
 }
 \date{\today}
 
@@ -45,19 +34,11 @@
 \maketitle
 
 \begin{abstract}
-<<<<<<< HEAD
-Este documento describe el sistema completo de retrieval de Hack2026 para descomposicion de bundles de moda, donde cada imagen de bundle debe asociarse con uno o mas identificadores de producto. La implementacion actual se apoya en OpenCLIP (Marqo Fashion SigLIP), con deteccion opcional de regiones de ropa y varias estrategias de inferencia (pipeline principal, per-crop v8, phase1 por seccion y top-1 por crop). Se detallan el preprocesamiento de datos, el aumento offline, el entrenamiento del modelo, la validacion local, la inferencia y la generacion de entregas. El paper se apoya en el codigo del repositorio, con enfasis en reproducibilidad y decisiones de ingenieria.
+Este documento describe el sistema de retrieval bundle$\rightarrow$product de goofytex. Se detallan las rutas actuales del repositorio tras la reorganizacion de carpetas, incluyendo preprocesamiento en \texttt{src/utils/}, entrenamiento e inferencia en \texttt{src/}, y capas de reranking/ensemble. El objetivo es mantener una referencia tecnica reproducible y alineada con la estructura real del codigo.
 \end{abstract}
 
 \begin{IEEEkeywords}
-recuperacion visual, aprendizaje multimodal, OpenCLIP, IA en moda, metric learning, matching a nivel de objeto
-=======
-This document describes the full Hack2026 retrieval system for fashion bundle decomposition, where each bundle image must be matched to one or more product identifiers. The implementation combines a baseline pretrained visual retrieval pipeline and an advanced OpenCLIP training pipeline with optional clothing-region detection. We detail data preprocessing, offline augmentation, model training, local validation, inference, and submission generation. The paper is grounded on the repository codebase, with an emphasis on reproducibility and engineering decisions.
-\end{abstract}
-
-\begin{IEEEkeywords}
-visual retrieval, multimodal learning, OpenCLIP, fashion AI, metric learning, object-level matching
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
+retrieval visual, OpenCLIP, SigLIP, YOLO, reranking, reproducibilidad
 \end{IEEEkeywords}
 
 \input{sections/01_introduction}

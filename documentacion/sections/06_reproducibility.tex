@@ -1,74 +1,29 @@
-<<<<<<< HEAD
 \section{Reproducibilidad}
 
 \subsection{Entorno}
 
 Dependencias base en \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, \texttt{torchvision}.
 
-Dependencias adicionales usadas por pipelines avanzados:
+Dependencias adicionales:
 \begin{itemize}
-  \item \texttt{open\_clip\_torch} (entrenamiento/inferencia OpenCLIP).
-  \item \texttt{ultralyticsplus} (deteccion YOLO clothing).
-  \item \texttt{faiss} (opcional, aceleracion de busqueda en \texttt{src.new\_infer.py}).
+  \item \texttt{open\_clip\_torch}
+  \item \texttt{ultralyticsplus}
+  \item \texttt{faiss} (opcional)
 \end{itemize}
 
-\subsection{Determinismo}
+\subsection{Configuracion centralizada}
 
-El codigo fija semillas de \texttt{random}, \texttt{numpy} y \texttt{torch}. \texttt{offline\_augment.py} usa semillas estables por hash de \texttt{asset\_id}+indice, permitiendo regenerar exactamente las mismas vistas sinteticas.
-
-\subsection{Configuracion Hydra}
-
-Se centraliza en:
 \begin{itemize}
-  \item \texttt{config/config.yaml}: hiperparametros de train/infer.
-  \item \texttt{config/files/file.yaml}: rutas de datos/imagenes/cache.
+  \item \texttt{config/config.yaml}
+  \item \texttt{config/files/file.yaml}
 \end{itemize}
 
-Los runs Hydra crean directorios de salida trazables por fecha/hora para comparar experimentos.
+\subsection{Rutas de utilidades}
 
-\subsection{Precondicion de Entrenamiento}
-
-El entrypoint \texttt{src.train.py} apunta por defecto a \texttt{data/product\_dataset\_with\_gender.csv}; por tanto, para reproducir train completo es necesario ejecutar antes \texttt{python src/utils/add\_gender.py}.
-
-\subsection{Contrato de Entrega}
-
-El CSV final usa columnas:
-=======
-\section{Reproducibility}
-
-\subsection{Environment}
-
-Base dependencies are listed in \texttt{requirements.txt}: \texttt{pandas}, \texttt{numpy}, \texttt{pillow}, \texttt{tqdm}, \texttt{requests}, \texttt{hydra-core}, \texttt{torch}, and \texttt{torchvision}. Additional runtime packages required by advanced features are:
+Scripts auxiliares relevantes:
 \begin{itemize}
-  \item \texttt{open\_clip\_torch} for the OpenCLIP backend.
-  \item \texttt{ultralyticsplus} for bundle clothing detection.
+  \item \texttt{src/utils/preprocess\_data.py}
+  \item \texttt{src/utils/offline\_augment.py}
+  \item \texttt{src/utils/add\_gender.py}
+  \item \texttt{src/utils/check\_link\_timestamps.py}
 \end{itemize}
-
-\subsection{Determinism Controls}
-
-The code explicitly sets random seeds (\texttt{random}, \texttt{numpy}, \texttt{torch}). Offline augmentation uses stable hash-based seeds per asset and augmentation index. This enables repeatable preprocessing and consistent training behavior under fixed configuration.
-
-\subsection{Hydra Configuration}
-
-Configuration is split into:
-\begin{itemize}
-  \item \texttt{config/config.yaml}: training and inference parameters.
-  \item \texttt{config/files/file.yaml}: dataset/image/cache paths.
-\end{itemize}
-
-Hydra output directories store run-specific artifacts, making experiments traceable without manual path bookkeeping.
-
-\subsection{Submission Contract}
-
-The final CSV must contain:
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
-\begin{itemize}
-  \item \texttt{bundle\_asset\_id}
-  \item \texttt{product\_asset\_id}
-\end{itemize}
-<<<<<<< HEAD
-
-La evaluacion considera el orden de ranking y hasta 15 predicciones por bundle.
-=======
-with up to 15 rows per bundle, sorted by model confidence.
->>>>>>> e9d5d43845f1bcb17b1a4f5c33b124b3b6907bf4
