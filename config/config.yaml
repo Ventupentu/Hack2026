@@ -62,3 +62,13 @@ infer:
   rerank_heavy_model: "ViT-SO400M-14-SigLIP-384"
   rerank_heavy_pretrained: "webli"
   rerank_heavy_weight: 0.4
+  # Trained lightweight MLP reranker (sim + pairwise embedding features)
+  rerank_mlp_enabled: false
+  rerank_mlp_checkpoint: ""
+  # < 0.0 => use blend_alpha saved in checkpoint
+  rerank_mlp_blend_alpha: -1.0
+  rerank_mlp_batch_size: 4096
+  rerank_mlp_candidate_pool: 200
+  # Export train bundle embeddings for MLP training (multi-box aggregated)
+  export_train_bundle_embeddings: false
+  train_bundle_embeddings_out: "outputs/train_bundle_embeddings.pt"
