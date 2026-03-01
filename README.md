@@ -1,4 +1,4 @@
-# Hack2026
+# goofytex
 
 Repositorio para retrieval de productos de moda a partir de imagenes de bundles.
 
