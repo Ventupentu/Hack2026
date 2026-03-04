@@ -1,6 +1,7 @@
 # Hugging Face Hub Integration
 
 This project can automatically sync training artifacts to a Hugging Face model repository.
+If the repository does not exist, the training startup creates it automatically.
 
 ## What is uploaded
 
@@ -52,6 +53,8 @@ If `hf.push_to_hub=true`, training fails fast at startup when:
 - Token is invalid (`whoami` check fails)
 - Repo cannot be accessed or created
 - Hydra runtime config file is missing
+
+Repository creation uses `create_repo(..., exist_ok=True)`, so an existing repo is reused and a missing one is created.
 
 Upload failures are not ignored. Background upload exceptions are raised before training exits.
 
