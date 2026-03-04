@@ -22,6 +22,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from src.config import InditexConfig
+from src.utils.hf_hub_sync import build_hf_uploader
 
 Pair = Tuple[str, str]
 
@@ -801,6 +802,10 @@ def train_grlite_retrieval(
     if use_lora and lora_rank <= 0:
         raise ValueError("params.grlite_lora_r must be > 0 when grlite_use_lora=true")
 
+    ensure_dir(output_dir)
+    metrics_path = output_dir / "train_metrics.json"
+    uploader = build_hf_uploader(cfg=cfg, output_dir=output_dir, artifact_namespace="grlite")
+
     print(f"Loading GR-Lite model from: {model_name}")
     base_model = load_grlite_base_model(model_name=model_name, device=device, input_size=input_size)
     if use_lora:
@@ -927,7 +932,6 @@ def train_grlite_retrieval(
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     best_val_loss = float("inf")
     history: List[Dict[str, Any]] = []
-    ensure_dir(output_dir)
 
     total_epochs = int(params.epochs)
     start_epoch = 1
@@ -1031,6 +1035,7 @@ def train_grlite_retrieval(
             f"val_loss={val_loss:.6f} "
             f"time={elapsed:.1f}s"
         )
+        write_metrics(metrics_path, history)
 
         if epoch % save_every == 0:
             save_checkpoint(
@@ -1055,8 +1060,9 @@ def train_grlite_retrieval(
 
         if val_loader is not None and np.isfinite(val_loss) and val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_ckpt_path = output_dir / "best.pt"
             save_checkpoint(
-                path=output_dir / "best.pt",
+                path=best_ckpt_path,
                 model=core_model,
                 optimizer=optimizer,
                 epoch=epoch,
@@ -1074,10 +1080,17 @@ def train_grlite_retrieval(
                 lora_target_modules=lora_target_modules,
                 lora_last_n_layers=lora_last_n_layers,
             )
+            if uploader is not None:
+                uploader.queue_checkpoint_artifacts(
+                    checkpoint_path=best_ckpt_path,
+                    metrics_path=metrics_path,
+                    checkpoint_label="best",
+                )
 
     last = history[-1] if history else {"epoch": 0, "train_loss": float("nan"), "val_loss": float("nan")}
+    last_ckpt_path = output_dir / "last.pt"
     save_checkpoint(
-        path=output_dir / "last.pt",
+        path=last_ckpt_path,
         model=core_model,
         optimizer=optimizer,
         epoch=int(last["epoch"]),
@@ -1096,5 +1109,15 @@ def train_grlite_retrieval(
         lora_last_n_layers=lora_last_n_layers,
     )
 
-    write_metrics(output_dir / "train_metrics.json", history)
+    write_metrics(metrics_path, history)
+    if uploader is not None:
+        try:
+            uploader.queue_checkpoint_artifacts(
+                checkpoint_path=last_ckpt_path,
+                metrics_path=metrics_path,
+                checkpoint_label="last",
+            )
+            uploader.wait_for_pending_uploads()
+        finally:
+            uploader.shutdown()
     print(f"Training finished. Outputs saved to: {output_dir}")

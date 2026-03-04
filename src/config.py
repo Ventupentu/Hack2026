@@ -104,9 +104,19 @@ class Infer:
 
 
 @dataclass
+class HuggingFace:
+    """Hugging Face Hub sync settings for training artifacts."""
+
+    push_to_hub: bool = False
+    hf_repo_id: str = ""
+    hf_token: str = ""
+
+
+@dataclass
 class InditexConfig:
     """Root config."""
 
     params: Params = field(default_factory=Params)
     files: Files = field(default_factory=Files)
     infer: "Infer" = field(default_factory=lambda: Infer())
+    hf: HuggingFace = field(default_factory=HuggingFace)

@@ -8,3 +8,4 @@ torch
 torchvision
 flask
 open-clip-torch
+huggingface_hub

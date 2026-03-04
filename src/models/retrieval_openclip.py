@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from src.config import InditexConfig
 from src.detection import BoxXYXY, ClothingYOLODetector, detect_boxes_for_assets
+from src.utils.hf_hub_sync import build_hf_uploader
 
 
 class OpenCLIPMultimodalEncoder(nn.Module):
@@ -755,6 +756,12 @@ def save_checkpoint(
     encoder_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save checkpoint state."""
+    args_payload = OmegaConf.to_container(OmegaConf.create(cfg), resolve=True)
+    if isinstance(args_payload, dict):
+        hf_section = args_payload.get("hf")
+        if isinstance(hf_section, dict) and "hf_token" in hf_section:
+            hf_section["hf_token"] = "***REDACTED***"
+
     payload = {
         "model": model.state_dict(),
         "encoder": encoder_state or {},
@@ -762,7 +769,7 @@ def save_checkpoint(
         "scaler": scaler.state_dict() if scaler is not None else None,
         "epoch": epoch,
         "best_metric": best_metric,
-        "args": OmegaConf.to_container(OmegaConf.create(cfg), resolve=True),
+        "args": args_payload,
     }
     torch.save(payload, path)
 
@@ -802,6 +809,7 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
     ensure_dir(output_dir)
     metrics_path = output_dir / "metrics.jsonl"
+    uploader = build_hf_uploader(cfg=cfg, output_dir=output_dir, artifact_namespace="openclip")
 
     clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
         "hf-hub:Marqo/marqo-fashionSigLIP"
@@ -933,7 +941,9 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
         f"max_hard_negatives={params.max_hard_negatives}"
     )
 
+    last_epoch = start_epoch - 1
     for epoch in range(start_epoch, params.epochs + 1):
+        last_epoch = epoch
         epoch_start = time.time()
         image_model.train()
         running_loss = 0.0
@@ -1085,8 +1095,9 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
 
         if recall_val > best_recall:
             best_recall = recall_val
+            best_ckpt_path = output_dir / "best.pt"
             save_checkpoint(
-                path=output_dir / "best.pt",
+                path=best_ckpt_path,
                 model=core_model,
                 optimizer=optimizer,
                 scaler=scaler,
@@ -1095,5 +1106,33 @@ def train_openclip_retrieval(cfg: InditexConfig, train_manifest: Path, val_manif
                 cfg=cfg,
                 encoder_state=get_encoder_state(image_model),
             )
+            if uploader is not None:
+                uploader.queue_checkpoint_artifacts(
+                    checkpoint_path=best_ckpt_path,
+                    metrics_path=metrics_path,
+                    checkpoint_label="best",
+                )
+
+    last_ckpt_path = output_dir / "last.pt"
+    save_checkpoint(
+        path=last_ckpt_path,
+        model=core_model,
+        optimizer=optimizer,
+        scaler=scaler,
+        epoch=last_epoch,
+        best_metric=best_recall,
+        cfg=cfg,
+        encoder_state=get_encoder_state(image_model),
+    )
+    if uploader is not None:
+        try:
+            uploader.queue_checkpoint_artifacts(
+                checkpoint_path=last_ckpt_path,
+                metrics_path=metrics_path,
+                checkpoint_label="last",
+            )
+            uploader.wait_for_pending_uploads()
+        finally:
+            uploader.shutdown()
 
     print(f"Training complete. Best recall@{params.recall_k}: {best_recall:.6f}")
