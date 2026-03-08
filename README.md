@@ -4,6 +4,12 @@ Repositorio para retrieval de productos de moda a partir de imagenes de bundles.
 
 Actualizado con inspeccion local del repo en fecha **01-03-2026**.
 
+## Pesos
+
+[![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-blue)](https://huggingface.co/Sergiugz/GoofyTex)
+
+Este repositorio contiene el código fuente para el proyecto Hack2026. Los pesos del modelo están alojados en Hugging Face: [Sergiugz/GoofyTex](https://huggingface.co/Sergiugz/GoofyTex).
+
 ## Resumen
 
 El objetivo es predecir `product_asset_id` para cada `bundle_asset_id` de test, con ranking de hasta 15 productos por bundle.
